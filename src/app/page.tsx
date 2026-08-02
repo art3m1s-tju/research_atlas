@@ -180,6 +180,7 @@ export default function Home() {
         syncing={syncing}
         syncStatus={syncStatus}
         onAddDirection={handleAddDirection}
+        onImportComplete={loadData}
       />
 
       <main className="flex-1 overflow-y-auto">

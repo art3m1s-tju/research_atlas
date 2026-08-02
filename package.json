@@ -16,7 +16,8 @@
     "summarize:papers": "tsx scripts/summarize-papers.ts",
     "clean:relevance": "tsx scripts/clean-relevance.ts",
     "test:relevance": "tsx scripts/check-relevance.ts",
-    "sync:incremental": "tsx scripts/update-citations.ts"
+    "sync:incremental": "tsx scripts/update-citations.ts",
+    "digest:daily": "tsx scripts/generate-daily-digest.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

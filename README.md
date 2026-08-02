@@ -14,6 +14,10 @@
 - 可手动打开/关闭研究方向并调整每日推荐权重，同时保留少量相邻方向探索
 - 识别顶会/顶刊、预印本、经典论文和同年份高影响论文
 - 支持新增自定义方向，例如“自动驾驶幻觉控制”
+- 支持导入 Zotero 导出的 BibTeX，作为兴趣样本和论文库
+- 论文详情页提供相似论文、OpenAlex 引用/被引扩展、相关性反馈和证据卡
+- 支持兴趣簇、全局排除关键词和推荐评估统计
+- 支持生成每日 Markdown 摘要，并可选通过 Webhook 或 Telegram 发送
 - 保留 DOI、PDF、数据源链接，并按 DOI、arXiv ID、Semantic Scholar ID 和标题年份去重
 - 论文卡片显示来源和引用量
 - 可选生成中文速览、核心创新点、方法和关键结果
@@ -43,6 +47,9 @@ npm run sync:incremental
 
 # 回归检查相关性过滤
 npm run test:relevance
+
+# 生成每日 Markdown 摘要；配置 Webhook/Telegram 后可选发送
+npm run digest:daily
 npm run dev -- --port 3100
 ```
 
@@ -87,6 +94,9 @@ SYNC_REQUEST_RETRIES=2
 - Unpaywall 用于寻找合法开放获取 PDF。
 - `.env.local` 和 `data/*.db` 已被 `.gitignore` 排除，不应提交密钥或本地数据库。
 - DeepSeek 配置后，`summarize:papers` 会用 `deepseek-v4-flash` 批量生成中文论文解读；默认并发 8，可通过 `SUMMARY_CONCURRENCY` 调整。
+- Zotero 建议先导出 BibTeX，再在网页左侧“导入 Zotero/BibTeX”；导入的论文会作为兴趣样本参与后续推荐。
+- 详情页的“尝试解析 PDF 全文”使用本机 `pdftotext` 提取开放 PDF；没有 PDF 或解析失败时会回退到摘要级证据。
+- `DIGEST_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID` 都是可选配置；不配置时只生成本地 Markdown，不会发送外部消息。
 
 ## 同步论文
 
@@ -143,6 +153,14 @@ npm run clean:relevance
 - `GET /api/recommendations`：基于真实 SQLite 论文库的方向推荐
 - `GET /api/daily-recommendations`：按兴趣方向生成每日精选；支持 `limit=1|2`，每个方向最多返回 1–2 篇
 - `GET|POST /api/direction-preferences`：读取或更新每日推荐方向和权重
+- `GET|POST|PATCH|DELETE /api/interest-clusters`：管理多个兴趣簇及其方向组合
+- `GET|POST|DELETE /api/exclusion-rules`：管理全局或方向级排除/必选关键词
+- `POST /api/library/import`：导入 BibTeX/Zotero 论文样本
+- `GET /api/papers/:id/related`：本地相似论文和 OpenAlex 引用/被引关系
+- `GET|POST /api/papers/:id/evidence`：读取或缓存结构化证据卡
+- `GET /api/papers/:id/relevance`、`POST /api/papers/:id/relevance`：人工相关性标注
+- `GET /api/evaluation`：推荐相关性标注和用户反馈统计
+- `GET|POST /api/notifications`：查看或保存摘要通知配置
 - `GET /api/papers/:id`：论文详情和个人状态
 - `POST /api/papers/:id/feedback`：收藏、已读、不感兴趣和笔记
 - `GET /api/sync/status`：后台同步进度、新增/更新统计和可恢复错误
@@ -155,7 +173,9 @@ npm run clean:relevance
 ```text
 src/app/                    Next.js 页面和 API 路由
 src/components/             论文卡片、筛选侧栏等 UI
+src/lib/research-features.ts 兴趣簇、关系、证据、评估和通知的本地表结构
 scripts/sync-multi-source.ts 多源同步、去重和合并
+scripts/generate-daily-digest.ts 每日 Markdown/可选通知摘要
 data/atlas.db               本地 SQLite 数据库（运行时生成）
 .env.example                环境变量模板
 MULTI-SOURCE.md             多数据源实现说明
@@ -171,3 +191,5 @@ npm run build
 ## 数据与引用量说明
 
 “引用: 暂无数据”表示当前数据源没有提供引用量，不等于论文没有被引用。OpenAlex 和 Semantic Scholar 才能提供引用统计；arXiv 主要提供最新预印本、摘要和 PDF。
+
+证据卡当前优先使用论文摘要和已缓存的中文解读，并明确标注置信度；它不是对 PDF 全文逐页解析的替代品。后续接入全文解析后，可以继续写入页码、原文片段和实验表格证据。

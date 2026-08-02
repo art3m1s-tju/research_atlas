@@ -17,6 +17,24 @@ interface DirectionPreference {
   explicitlyConfigured: boolean;
 }
 
+interface ExclusionRule {
+  id: number;
+  direction: string;
+  term: string;
+  mode: string;
+}
+
+interface InterestCluster {
+  id: number;
+  name: string;
+  color: string;
+  directions: { direction: string; weight: number }[];
+}
+
+interface EvaluationSummary {
+  labels: { label: string; count: number }[];
+}
+
 interface SidebarProps {
   directions: Direction[];
   selected: string;
@@ -36,6 +54,7 @@ interface SidebarProps {
     errors: string[];
   } | null;
   onAddDirection: (label: string, query: string) => Promise<void>;
+  onImportComplete?: () => Promise<void> | void;
 }
 
 export default function Sidebar({
@@ -46,6 +65,7 @@ export default function Sidebar({
   syncing,
   syncStatus,
   onAddDirection,
+  onImportComplete,
 }: SidebarProps) {
   const [showForm, setShowForm] = React.useState(false);
   const [label, setLabel] = React.useState("");
@@ -56,6 +76,12 @@ export default function Sidebar({
   const [preferences, setPreferences] = React.useState<DirectionPreference[]>([]);
   const [preferencesLoading, setPreferencesLoading] = React.useState(false);
   const [preferencesError, setPreferencesError] = React.useState("");
+  const [importing, setImporting] = React.useState(false);
+  const [rules, setRules] = React.useState<ExclusionRule[]>([]);
+  const [ruleTerm, setRuleTerm] = React.useState("");
+  const [clusters, setClusters] = React.useState<InterestCluster[]>([]);
+  const [clusterName, setClusterName] = React.useState("");
+  const [evaluation, setEvaluation] = React.useState<EvaluationSummary | null>(null);
 
   async function loadPreferences() {
     setPreferencesLoading(true);
@@ -65,11 +91,56 @@ export default function Sidebar({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "兴趣方向加载失败");
       setPreferences(data.directions || []);
+      const rulesResponse = await fetch("/api/exclusion-rules", { cache: "no-store" });
+      const rulesData = await rulesResponse.json();
+      setRules(rulesData.rules || []);
+      const clustersResponse = await fetch("/api/interest-clusters", { cache: "no-store" });
+      const clustersData = await clustersResponse.json();
+      setClusters(clustersData.clusters || []);
+      const evaluationResponse = await fetch("/api/evaluation", { cache: "no-store" });
+      const evaluationData = await evaluationResponse.json();
+      setEvaluation(evaluationData);
     } catch (err) {
       setPreferencesError(err instanceof Error ? err.message : "兴趣方向加载失败");
     } finally {
       setPreferencesLoading(false);
     }
+  }
+
+  async function addExclusionRule() {
+    if (ruleTerm.trim().length < 2) return;
+    const response = await fetch("/api/exclusion-rules", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ term: ruleTerm.trim(), direction: "all", mode: "exclude" }),
+    });
+    if (!response.ok) return;
+    setRuleTerm("");
+    const refreshed = await fetch("/api/exclusion-rules", { cache: "no-store" }).then((result) => result.json());
+    setRules(refreshed.rules || []);
+    window.dispatchEvent(new CustomEvent("direction-preferences-updated"));
+  }
+
+  async function removeExclusionRule(id: number) {
+    await fetch(`/api/exclusion-rules?id=${id}`, { method: "DELETE" });
+    setRules((current) => current.filter((rule) => rule.id !== id));
+    window.dispatchEvent(new CustomEvent("direction-preferences-updated"));
+  }
+
+  async function createCluster() {
+    const name = clusterName.trim();
+    const directions = preferences.filter((item) => item.isActive).map((item) => ({ direction: item.key, weight: item.weight }));
+    if (name.length < 2 || !directions.length) return;
+    const response = await fetch("/api/interest-clusters", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, directions }) });
+    if (!response.ok) return;
+    setClusterName("");
+    const refreshed = await fetch("/api/interest-clusters", { cache: "no-store" }).then((result) => result.json());
+    setClusters(refreshed.clusters || []);
+  }
+
+  async function deleteCluster(id: number) {
+    await fetch(`/api/interest-clusters?id=${id}`, { method: "DELETE" });
+    setClusters((current) => current.filter((cluster) => cluster.id !== id));
   }
 
   async function updatePreference(direction: string, isActive: boolean, weight: number) {
@@ -84,6 +155,27 @@ export default function Sidebar({
       ? { ...item, isActive: data.isActive, weight: data.weight, explicitlyConfigured: true }
       : item));
     window.dispatchEvent(new CustomEvent("direction-preferences-updated"));
+  }
+
+  async function importBibtex(file: File) {
+    setImporting(true);
+    try {
+      const bibtex = await file.text();
+      const response = await fetch("/api/library/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bibtex, collection: "Zotero Library" }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "导入失败");
+      alert(`导入完成：${data.inserted} 篇新增，${data.duplicates} 篇已存在`);
+      await onImportComplete?.();
+      window.dispatchEvent(new CustomEvent("paper-feedback-updated"));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "导入失败");
+    } finally {
+      setImporting(false);
+    }
   }
 
   async function submitDirection(event: React.FormEvent) {
@@ -126,6 +218,20 @@ export default function Sidebar({
         >
           {showPreferences ? "收起兴趣管理" : "⚙ 管理每日推荐方向"}
         </button>
+        <label className={`mt-2 block cursor-pointer text-xs font-medium text-gray-500 hover:text-blue-700 ${importing ? "pointer-events-none opacity-50" : ""}`}>
+          {importing ? "正在导入 Zotero..." : "⇧ 导入 Zotero/BibTeX"}
+          <input
+            type="file"
+            accept=".bib,.bibtex,.txt"
+            className="hidden"
+            disabled={importing}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) importBibtex(file);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
         {showPreferences && (
           <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-2.5">
             <p className="mb-2 text-[11px] leading-relaxed text-gray-500">
@@ -159,6 +265,34 @@ export default function Sidebar({
                 </div>
               ))}
             </div>
+            <div className="mt-3 border-t border-gray-200 pt-3">
+              <div className="mb-1 text-[11px] font-medium text-gray-600">全局排除关键词</div>
+              <div className="flex gap-1">
+                <input value={ruleTerm} onChange={(event) => setRuleTerm(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addExclusionRule(); }} placeholder="如 medical imaging" className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-[10px]" />
+                <button type="button" onClick={addExclusionRule} className="rounded bg-slate-700 px-2 py-1 text-[10px] text-white">添加</button>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {rules.filter((rule) => rule.direction === "all").map((rule) => (
+                  <button key={rule.id} type="button" onClick={() => removeExclusionRule(rule.id)} className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] text-red-700" title="点击删除">{rule.term} ×</button>
+                ))}
+              </div>
+            </div>
+            <div className="mt-3 border-t border-gray-200 pt-3">
+              <div className="mb-1 text-[11px] font-medium text-gray-600">兴趣簇</div>
+              <p className="mb-2 text-[10px] leading-relaxed text-gray-500">把当前启用的方向保存成一个研究主题，例如“RoboRacer 2026”。</p>
+              <div className="flex gap-1">
+                <input value={clusterName} onChange={(event) => setClusterName(event.target.value)} placeholder="兴趣簇名称" className="min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 text-[10px]" />
+                <button type="button" onClick={createCluster} className="rounded bg-slate-700 px-2 py-1 text-[10px] text-white">保存</button>
+              </div>
+              <div className="mt-2 space-y-1">
+                {clusters.map((cluster) => <div key={cluster.id} className="flex items-center justify-between rounded bg-white px-2 py-1 text-[10px] text-gray-700"><span>{cluster.name} · {cluster.directions.length} 个方向</span><button type="button" onClick={() => deleteCluster(cluster.id)} className="text-red-500">删除</button></div>)}
+              </div>
+            </div>
+            {evaluation && evaluation.labels.length > 0 && (
+              <div className="mt-3 border-t border-gray-200 pt-3 text-[10px] text-gray-500">
+                近 90 天相关性标注：{evaluation.labels.map((item) => `${item.label} ${item.count}`).join(" · ")}
+              </div>
+            )}
           </div>
         )}
         {showForm && (

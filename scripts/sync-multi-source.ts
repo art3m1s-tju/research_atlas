@@ -12,6 +12,7 @@ import {
   startSyncStatus,
   writeSyncStatus,
 } from "../src/lib/sync-status";
+import { writeSyncCheckpoint } from "../src/lib/sync-checkpoint";
 
 function loadLocalEnv() {
   const envPath = ".env.local";
@@ -698,6 +699,7 @@ async function main() {
         publish({ [upserted.changeType]: (stats[upserted.changeType] || 0) + 1 } as Partial<typeof stats>);
       }
       console.log(`  ✓ ${deduped.size} records merged`);
+      writeSyncCheckpoint({ source: "multi-source", direction: direction.key, recordsFetched: deduped.size, completedAt: new Date().toISOString() });
       writeSyncStatus({
         phase: "抓取论文",
         message: `${direction.label} 完成`,

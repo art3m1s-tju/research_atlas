@@ -5,6 +5,7 @@ import { BUILTIN_DIRECTION_LABELS, qualityLabel } from "@/lib/research-ranking";
 import { ensureDirectionPreferenceSchema } from "@/lib/direction-preferences";
 import { ensureUserStateSchema } from "@/lib/user-state";
 import { directionRelevanceScore } from "@/lib/relevance";
+import { ensureResearchFeatureSchema } from "@/lib/research-features";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 
@@ -28,6 +29,7 @@ function parseJson(value: string | null, fallback: any) {
 function ensureSchema(db: Database.Database) {
   ensureUserStateSchema(db);
   ensureDirectionPreferenceSchema(db);
+  ensureResearchFeatureSchema(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS paper_directions (
       paper_id INTEGER NOT NULL,
@@ -100,7 +102,7 @@ function parseEventDate(value: string) {
 function decayedEventWeight(event: string, createdAt: string) {
   const ageDays = Math.max(0, (Date.now() - parseEventDate(createdAt).getTime()) / (1000 * 60 * 60 * 24));
   const decay = Math.exp(-ageDays / 90);
-  const base = event === "save" ? 3 : event === "read" ? 1 : event === "unsave" ? -3 : event === "unread" ? -1 : event === "hide" ? -4 : event === "unhide" ? 4 : 0;
+  const base = event === "save" ? 3 : event === "library_import" ? 2 : event === "read" ? 1 : event === "unsave" ? -3 : event === "unread" ? -1 : event === "hide" ? -4 : event === "unhide" ? 4 : 0;
   return base * decay;
 }
 
@@ -222,6 +224,17 @@ export async function GET(request: NextRequest) {
       interacted: eventRows.filter((event) => parseEventDate(event.created_at).getTime() >= Date.now() - 30 * 24 * 60 * 60 * 1000).length,
       recommendationsLast7Days,
     };
+    const interestClusters = db.prepare(`
+      SELECT c.id, c.name, c.color, cd.direction, cd.weight
+      FROM interest_clusters c
+      LEFT JOIN interest_cluster_directions cd ON cd.cluster_id = c.id
+      ORDER BY c.updated_at DESC, c.id, cd.direction
+    `).all() as { id: number; name: string; color: string; direction: string | null; weight: number | null }[];
+    const clusters = [...new Map(interestClusters.map((row) => [row.id, { id: row.id, name: row.name, color: row.color, directions: [] as { direction: string; weight: number }[] }])).values()];
+    for (const row of interestClusters) {
+      const cluster = clusters.find((item) => item.id === row.id);
+      if (cluster && row.direction) cluster.directions.push({ direction: row.direction, weight: row.weight || 1 });
+    }
 
     const behaviorMap = new Map(behaviorRows.map((row) => [row.direction, row]));
     const directionKeys = requestedDirections.length
@@ -246,6 +259,7 @@ export async function GET(request: NextRequest) {
         total: 0,
         filterWindow,
         stats,
+        interestClusters: clusters,
       });
     }
 
@@ -285,12 +299,14 @@ export async function GET(request: NextRequest) {
         total: sections.reduce((sum, section) => sum + section.papers.length, 0),
         filterWindow,
         stats,
+        interestClusters: clusters,
       });
     }
 
     const selectedIds = new Set<number>();
     const customDirectionQueries = new Map((db.prepare("SELECT key, query FROM custom_directions").all() as { key: string; query: string }[])
       .map((direction) => [direction.key, direction.query]));
+    const exclusionRules = db.prepare("SELECT direction, term, mode FROM paper_exclusion_rules").all() as { direction: string; term: string; mode: string }[];
     const getDirectionRow = (directionKey: string) => db.prepare(`
       SELECT direction, direction_label
       FROM paper_directions
@@ -326,6 +342,10 @@ export async function GET(request: NextRequest) {
       const directionQuery = customDirectionQueries.get(directionKey) || directionLabel;
 
       const scored = candidates.map((paper) => {
+        const candidateText = [paper.title, paper.abstract, paper.venue].filter(Boolean).join(" ").toLowerCase();
+        const applicableRules = exclusionRules.filter((rule) => rule.direction === "all" || rule.direction === directionKey);
+        if (applicableRules.some((rule) => rule.mode === "exclude" && candidateText.includes(rule.term))) return null;
+        if (applicableRules.some((rule) => rule.mode === "require" && !candidateText.includes(rule.term))) return null;
         const base = Number(paper.recommendation_score || 0);
         const recency = recencyScore(paper.year, paper.published_date);
         const venue = Math.min(Math.max(Number(paper.venue_tier || 0), 0) / 3, 1);
@@ -412,6 +432,7 @@ export async function GET(request: NextRequest) {
       total: sections.reduce((sum, section) => sum + section.papers.length, 0),
       filterWindow,
       stats,
+      interestClusters: clusters,
     });
   } catch (error) {
     return NextResponse.json({ error: String(error), directions: [], total: 0 }, { status: 500 });

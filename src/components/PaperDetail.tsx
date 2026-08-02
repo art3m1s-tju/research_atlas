@@ -22,21 +22,42 @@ type Paper = {
   userState: { isRead: boolean; isSaved: boolean; note: string };
 };
 
+type RelatedPaper = {
+  id: string;
+  title: string;
+  authors: string;
+  year: number | null;
+  venue: string;
+  citations: number;
+  relation: string;
+  score?: number;
+  local?: boolean;
+};
+
+type EvidenceItem = { type: string; label: string; content: string; source: string; confidence: string };
+
 export default function PaperDetail({ id }: { id: string }) {
   const [paper, setPaper] = useState<Paper | null>(null);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
+  const [related, setRelated] = useState<{ similar: RelatedPaper[]; citedBy: RelatedPaper[]; references: RelatedPaper[]; message?: string }>({ similar: [], citedBy: [], references: [] });
+  const [relevanceLabels, setRelevanceLabels] = useState<Record<string, string>>({});
+  const [evidence, setEvidence] = useState<{ items: EvidenceItem[]; note?: string } | null>(null);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
 
   useEffect(() => {
-    fetch(`/api/papers/${encodeURIComponent(id)}`)
-      .then((response) => response.json())
-      .then((data) => {
-        setPaper(data.paper || null);
-        setNote(data.paper?.userState?.note || "");
-        setSaved(Boolean(data.paper?.userState?.isSaved));
-      })
-      .finally(() => setLoading(false));
+    Promise.all([
+      fetch(`/api/papers/${encodeURIComponent(id)}`).then((response) => response.json()),
+      fetch(`/api/papers/${encodeURIComponent(id)}/related`).then((response) => response.json()).catch(() => ({ similar: [], citedBy: [], references: [] })),
+      fetch(`/api/papers/${encodeURIComponent(id)}/evidence`).then((response) => response.json()).catch(() => ({ evidence: [], note: "证据卡暂时不可用" })),
+    ]).then(([data, relationData, evidenceData]) => {
+      setPaper(data.paper || null);
+      setNote(data.paper?.userState?.note || "");
+      setSaved(Boolean(data.paper?.userState?.isSaved));
+      setRelated(relationData);
+      setEvidence({ items: evidenceData.evidence || [], note: evidenceData.note });
+    }).finally(() => setLoading(false));
   }, [id]);
 
   async function feedback(action: string, payload: Record<string, unknown> = {}) {
@@ -49,6 +70,26 @@ export default function PaperDetail({ id }: { id: string }) {
     const data = await response.json();
     setSaved(Boolean(data.userState?.isSaved));
     if (paper) setPaper({ ...paper, userState: data.userState });
+  }
+
+  async function markRelevance(direction: string, label: "relevant" | "partial" | "irrelevant") {
+    const response = await fetch(`/api/papers/${encodeURIComponent(id)}/relevance`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction, label }),
+    });
+    if (response.ok) setRelevanceLabels((current) => ({ ...current, [direction]: label }));
+  }
+
+  async function loadFullTextEvidence() {
+    setEvidenceLoading(true);
+    try {
+      const response = await fetch(`/api/papers/${encodeURIComponent(id)}/evidence?fulltext=1`, { cache: "no-store" });
+      const data = await response.json();
+      setEvidence({ items: data.evidence || [], note: data.note || data.warning });
+    } finally {
+      setEvidenceLoading(false);
+    }
   }
 
   if (loading) return <main className="mx-auto max-w-4xl p-8 text-gray-500">加载论文中...</main>;
@@ -82,6 +123,67 @@ export default function PaperDetail({ id }: { id: string }) {
         {paper.innovationsZh.length > 0 && <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">核心创新</h2><ul className="mt-3 list-disc space-y-2 pl-6 text-gray-700">{paper.innovationsZh.map((item) => <li key={item}>{item}</li>)}</ul></section>}
         {paper.methodZh && <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">方法</h2><p className="mt-3 leading-7 text-gray-700">{paper.methodZh}</p></section>}
         {paper.resultsZh && <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">实验结果</h2><p className="mt-3 leading-7 text-gray-700">{paper.resultsZh}</p></section>}
+
+        {evidence && <section className="mt-8 rounded-xl border border-amber-200 bg-amber-50/50 p-5">
+          <div className="flex items-center justify-between gap-3"><h2 className="text-xl font-semibold text-gray-900">证据卡</h2><button type="button" onClick={loadFullTextEvidence} disabled={evidenceLoading} className="rounded border border-amber-300 bg-white px-2.5 py-1 text-xs text-amber-800 disabled:opacity-50">{evidenceLoading ? "解析全文中..." : "尝试解析 PDF 全文"}</button></div>
+          <p className="mt-1 text-xs text-gray-600">{evidence.note}</p>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {evidence.items.map((item) => <div key={item.type} className="rounded-lg bg-white p-3"><div className="flex items-center justify-between"><h3 className="text-sm font-semibold text-gray-800">{item.label}</h3><span className="text-[10px] text-gray-500">{item.confidence === "medium" ? "中等置信度" : "低置信度"}</span></div><p className="mt-2 text-sm leading-6 text-gray-700">{item.content}</p><p className="mt-2 text-[10px] text-gray-400">来源：{item.source}</p></div>)}
+          </div>
+        </section>}
+
+        <section className="mt-8 rounded-xl border border-gray-200 bg-slate-50 p-5">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-xl font-semibold text-gray-900">论文关系</h2>
+            <span className="text-xs text-gray-500">{related.message || "相似度与引用关系"}</span>
+          </div>
+          {[
+            ["相似论文", related.similar],
+            ["引用它的论文", related.citedBy],
+            ["它引用的论文", related.references],
+          ].map(([label, items]) => {
+            const papers = items as RelatedPaper[];
+            return papers.length ? (
+              <div key={label as string} className="mt-5">
+                <h3 className="text-sm font-semibold text-gray-800">{label as string}</h3>
+                <div className="mt-2 space-y-2">
+                  {papers.map((item) => {
+                    const href = item.local ? `/papers/${encodeURIComponent(item.id)}` : `https://openalex.org/${item.id.replace("https://openalex.org/", "")}`;
+                    return (
+                      <a key={`${label}-${item.id}`} href={href} target={item.local ? undefined : "_blank"} rel={item.local ? undefined : "noreferrer"} className="block rounded-lg bg-white px-3 py-2 hover:bg-blue-50">
+                        <div className="text-sm font-medium text-gray-900">{item.title}</div>
+                        <div className="mt-1 text-xs text-gray-500">{item.venue || "来源待核实"} · {item.year || "年份未知"} · 引用 {item.citations}</div>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null;
+          })}
+          {!related.similar.length && !related.citedBy.length && !related.references.length && <p className="mt-3 text-sm text-gray-500">暂时没有足够的论文关系数据。</p>}
+        </section>
+
+        <section className="mt-8 rounded-xl border border-gray-200 p-5">
+          <h2 className="text-xl font-semibold text-gray-900">相关性反馈</h2>
+          <p className="mt-1 text-sm text-gray-500">按方向标注后，后续推荐会逐渐减少类似误匹配。</p>
+          <div className="mt-4 space-y-3">
+            {paper.directions.map((direction) => (
+              <div key={direction.key} className="flex flex-wrap items-center gap-2">
+                <span className="w-36 text-sm text-gray-700">{direction.label}</span>
+                {([["relevant", "相关"], ["partial", "部分相关"], ["irrelevant", "不相关"]] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => markRelevance(direction.key, value)}
+                    className={`rounded border px-2.5 py-1 text-xs ${relevanceLabels[direction.key] === value ? "border-blue-600 bg-blue-600 text-white" : "border-gray-300 text-gray-600 hover:bg-gray-50"}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
 
         <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">我的笔记</h2><textarea value={note} onChange={(event) => setNote(event.target.value)} className="mt-3 min-h-32 w-full rounded-lg border border-gray-300 p-3 text-sm focus:border-blue-500 focus:outline-none" placeholder="记录与你的研究、RoboRacer 或规划控制的关系..." /><button onClick={() => feedback("note", { note })} className="mt-2 rounded-lg bg-slate-800 px-4 py-2 text-sm text-white">保存笔记</button></section>
       </article>
