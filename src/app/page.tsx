@@ -35,6 +35,7 @@ interface Paper {
   publicationChannel?: string;
   publicationStatus?: string;
   venueVerified?: boolean;
+  venueConfidence?: number;
   qualityScore?: number;
 }
 

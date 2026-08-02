@@ -10,10 +10,12 @@
     "db:seed": "tsx scripts/seed.ts",
     "db:reset": "rm -f data/atlas.db && npm run db:seed",
     "sync:full": "tsx scripts/sync-multi-source.ts",
+    "sync:pipeline": "tsx scripts/run-sync-pipeline.ts",
     "sync:custom": "tsx scripts/sync-multi-source.ts",
     "embeddings:backfill": "tsx scripts/embed-papers.ts",
     "summarize:papers": "tsx scripts/summarize-papers.ts",
     "clean:relevance": "tsx scripts/clean-relevance.ts",
+    "test:relevance": "tsx scripts/check-relevance.ts",
     "sync:incremental": "tsx scripts/update-citations.ts"
   },
   "dependencies": {

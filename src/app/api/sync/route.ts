@@ -15,9 +15,9 @@ export async function POST() {
   const logPath = path.join(logDirectory, "sync.log");
   mkdirSync(logDirectory, { recursive: true });
   const logDescriptor = openSync(logPath, "a");
-  const scriptPath = path.join(root, "scripts", "sync-multi-source.ts");
+  const scriptPath = path.join(root, "scripts", "run-sync-pipeline.ts");
   const command = process.platform === "win32" ? "npx.cmd" : "npx";
-  const child = spawn(command, ["tsx", scriptPath], {
+  const child = spawn(command, ["tsx", scriptPath, "--force"], {
     cwd: root,
     detached: true,
     stdio: ["ignore", logDescriptor, logDescriptor],

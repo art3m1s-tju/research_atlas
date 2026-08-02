@@ -1,3 +1,7 @@
+"use client";
+
+import { useState } from "react";
+
 interface Paper {
   id: string;
   title: string;
@@ -29,7 +33,9 @@ interface Paper {
   publicationChannel?: string;
   publicationStatus?: string;
   venueVerified?: boolean;
+  venueConfidence?: number;
   qualityScore?: number;
+  userState?: { isRead?: boolean; isSaved?: boolean; isHidden?: boolean; note?: string };
 }
 
 const DIRECTION_LABELS: Record<string, { label: string; color: string }> = {
@@ -46,6 +52,8 @@ const DIRECTION_LABELS: Record<string, { label: string; color: string }> = {
 };
 
 export default function PaperCard({ paper }: { paper: Paper }) {
+  const [userState, setUserState] = useState(paper.userState || {});
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
   const dir = paper.directionLabel
     ? { label: paper.directionLabel, color: paper.directionColor || "#64748b" }
     : DIRECTION_LABELS[paper.direction];
@@ -55,6 +63,25 @@ export default function PaperCard({ paper }: { paper: Paper }) {
     ? (paper.citationPercentile || 0) / 100
     : (paper.citationPercentile || 0);
   const isHighImpactForAge = citationPercentile >= 0.9;
+
+  async function applyFeedback(action: "read" | "unread" | "save" | "unsave" | "hide") {
+    setFeedbackLoading(true);
+    try {
+      const response = await fetch(`/api/papers/${encodeURIComponent(paper.id)}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setUserState(data.userState || {});
+      }
+    } finally {
+      setFeedbackLoading(false);
+    }
+  }
+
+  if (userState.isHidden) return null;
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
@@ -172,6 +199,36 @@ export default function PaperCard({ paper }: { paper: Paper }) {
           </span>
         </div>
         <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={feedbackLoading}
+            onClick={() => applyFeedback(userState.isRead ? "unread" : "read")}
+            className="px-2.5 py-1.5 border border-gray-300 text-gray-700 text-xs rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          >
+            {userState.isRead ? "已读" : "标记已读"}
+          </button>
+          <button
+            type="button"
+            disabled={feedbackLoading}
+            onClick={() => applyFeedback(userState.isSaved ? "unsave" : "save")}
+            className={`px-2.5 py-1.5 border text-xs rounded-lg disabled:opacity-50 ${userState.isSaved ? "border-amber-300 bg-amber-50 text-amber-700" : "border-gray-300 text-gray-700 hover:bg-gray-50"}`}
+          >
+            {userState.isSaved ? "已收藏" : "收藏"}
+          </button>
+          <button
+            type="button"
+            disabled={feedbackLoading}
+            onClick={() => applyFeedback("hide")}
+            className="px-2.5 py-1.5 border border-gray-300 text-gray-500 text-xs rounded-lg hover:bg-gray-50 disabled:opacity-50"
+          >
+            不感兴趣
+          </button>
+          <a
+            href={`/papers/${encodeURIComponent(paper.id)}`}
+            className="px-2.5 py-1.5 border border-gray-300 text-gray-700 text-xs rounded-lg hover:bg-gray-50"
+          >
+            详情
+          </a>
           {paper.pdfUrl && (
             <a
               href={paper.pdfUrl}

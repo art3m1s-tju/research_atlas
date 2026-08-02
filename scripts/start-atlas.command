@@ -91,10 +91,7 @@ echo "网页已启动，正在后台同步论文..."
 echo "同步进度可在网页中查看，详细日志: $ROOT_DIR/data/sync.log"
 mkdir -p "$ROOT_DIR/data"
 (
-  npm run sync:full || echo "同步失败，详见 data/sync.log"
-  npm run clean:relevance || echo "相关性清理失败，详见 data/sync.log"
-  npm run embeddings:backfill || echo "语义向量回填失败，详见 data/sync.log"
-  npm run summarize:papers || echo "中文论文解读未完成，详见 data/sync.log"
+  npm run sync:pipeline || echo "后台数据流水线失败，详见 data/sync.log"
 ) >> "$ROOT_DIR/data/sync.log" 2>&1 &
 SYNC_PID=$!
 

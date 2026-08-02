@@ -3,6 +3,19 @@ export type PublicationStatus = "published" | "preprint" | "workshop" | "unknown
 
 export type VenueTier = 0 | 1 | 2 | 3;
 
+export const BUILTIN_DIRECTION_LABELS: Record<string, string> = {
+  e2e: "端到端自动驾驶",
+  planning: "运动规划与控制",
+  world_model: "驾驶世界模型",
+  llm_driving: "大模型+驾驶",
+  control: "车辆控制",
+  perception: "BEV感知",
+  prediction: "轨迹预测",
+  rl_driving: "强化学习驾驶",
+  racing: "自动驾驶竞赛",
+  safety: "安全验证",
+};
+
 export interface ClassicSeed {
   title: string;
   year: number;
@@ -231,6 +244,17 @@ export function metadataForPaper(paper: {
   const enriched = {
     ...venue,
     venueVerified: Boolean(paper.venue && (paper.sources || []).length > 0),
+    venueConfidence: !paper.venue
+      ? 0
+      : (paper.sources || []).includes("Curated classics")
+        ? 1
+        : (paper.sources || []).includes("Crossref") && venue.venueType !== "unknown"
+          ? 0.95
+          : (paper.sources || []).includes("OpenAlex") && venue.venueType !== "unknown"
+            ? 0.85
+            : venue.venueType !== "unknown"
+              ? 0.6
+              : 0.25,
     isClassic,
     isFrontier,
     discoveryReason: discoveryReason({

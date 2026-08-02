@@ -86,3 +86,12 @@ export function startSyncStatus(totalDirections: number) {
     errors: [],
   });
 }
+
+export function isSyncFresh(minimumIntervalHours: number, now = Date.now()) {
+  if (minimumIntervalHours <= 0) return false;
+  const status = readSyncStatus();
+  if (status.state !== "completed" || !status.finishedAt) return false;
+  const finishedAt = new Date(status.finishedAt).getTime();
+  if (!Number.isFinite(finishedAt)) return false;
+  return now - finishedAt < minimumIntervalHours * 60 * 60 * 1000;
+}

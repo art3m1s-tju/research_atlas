@@ -13,8 +13,8 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始同步论文..." >> "$LOG_FILE"
 
 cd "$PROJECT_DIR"
 
-# 运行同步脚本
-npx tsx scripts/sync-multi-source.ts >> "$LOG_FILE" 2>&1
+# 运行完整后台流水线；同步器会自动执行时间门控
+npm run sync:pipeline >> "$LOG_FILE" 2>&1
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] 同步完成" >> "$LOG_FILE"
 echo "---" >> "$LOG_FILE"

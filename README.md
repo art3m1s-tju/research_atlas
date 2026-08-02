@@ -6,6 +6,7 @@
 
 - 多数据源论文同步：OpenAlex、arXiv、Crossref、Unpaywall；Semantic Scholar 可选
 - 网页先启动、论文同步在后台执行，并提供方向进度、新增/更新/无变化统计和错误记录
+- 默认 12 小时同步门控；网页按钮和 `--force` 可强制刷新
 - 按方向筛选、全文搜索，默认以前沿优先的推荐分数排序
 - 一篇论文可同时属于多个研究方向，相关性按“论文-方向”分别判断
 - 前沿论文、经典必读、我的推荐三种阅读视图
@@ -14,6 +15,7 @@
 - 保留 DOI、PDF、数据源链接，并按 DOI、arXiv ID、Semantic Scholar ID 和标题年份去重
 - 论文卡片显示来源和引用量
 - 可选生成中文速览、核心创新点、方法和关键结果
+- 支持论文详情、收藏、已读、不感兴趣和个人笔记
 - 支持本地 SQLite 数据库，不依赖云端数据库
 
 ## 快速开始
@@ -24,6 +26,18 @@
 npm install
 [ -f .env.local ] || cp .env.example .env.local
 npm run sync:full
+
+# 强制刷新，忽略同步时间门控
+npm run sync:full -- --force
+
+# 完整后台流水线：同步、清理、向量和中文解读
+npm run sync:pipeline
+
+# 增量更新 OpenAlex 引用量
+npm run sync:incremental
+
+# 回归检查相关性过滤
+npm run test:relevance
 npm run dev -- --port 3100
 ```
 
@@ -97,7 +111,7 @@ npm run summarize:papers
 ./scripts/sync-daily.sh
 ```
 
-同步过程会合并不同数据源的同一篇论文，并保留更高的引用量、更完整的摘要和可用 PDF。OpenAlex 和 arXiv 优先抓取最新候选，之后按照方向相关性、时间、会议质量和同年份影响力重新排序。新增方向后，再运行一次 `npm run sync:full` 即可抓取该方向的论文。
+同步过程会合并不同数据源的同一篇论文，并保留更高的引用量、更完整的摘要和可用 PDF。OpenAlex 和 arXiv 优先抓取最新候选，之后按照方向相关性、时间、会议质量和同年份影响力重新排序。默认 12 小时内不会重复抓取；需要立即刷新时运行 `npm run sync:full -- --force`。新增方向后，再运行一次强制同步即可抓取该方向的论文。
 
 系统内置少量经典必读种子，例如 Attention Is All You Need、BEVFormer、VectorNet、Trajectron++ 和 UniAD。经典论文由可维护的种子清单控制，不会把所有老论文或高引用论文都误标成经典；可在 `src/lib/research-ranking.ts` 中补充或调整。
 
@@ -121,6 +135,9 @@ npm run clean:relevance
 ## API
 
 - `GET /api/papers`：论文列表，支持 `direction`、`search` 和 `view=recommended|frontier|classic` 参数
+- `GET /api/recommendations`：基于真实 SQLite 论文库的方向推荐
+- `GET /api/papers/:id`：论文详情和个人状态
+- `POST /api/papers/:id/feedback`：收藏、已读、不感兴趣和笔记
 - `GET /api/sync/status`：后台同步进度、新增/更新统计和可恢复错误
 - `GET /api/directions`：方向和论文数量
 - `POST /api/directions`：新增自定义方向

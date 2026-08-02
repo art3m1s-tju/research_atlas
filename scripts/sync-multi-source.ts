@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { isLikelyRelevant } from "../src/lib/relevance";
 import {
   CLASSIC_SEEDS,
@@ -7,6 +7,7 @@ import {
   normalizeTitle,
 } from "../src/lib/research-ranking";
 import {
+  isSyncFresh,
   readSyncStatus,
   startSyncStatus,
   writeSyncStatus,
@@ -43,6 +44,7 @@ const CROSSREF_MAILTO = process.env.CROSSREF_MAILTO || process.env.UNPAYWALL_EMA
 const UNPAYWALL_EMAIL = process.env.UNPAYWALL_EMAIL;
 const REQUEST_TIMEOUT_MS = Math.max(3000, Number(process.env.SYNC_REQUEST_TIMEOUT_MS || 15000));
 const REQUEST_RETRIES = Math.max(0, Number(process.env.SYNC_REQUEST_RETRIES || 2));
+const SYNC_MIN_INTERVAL_HOURS = Math.max(0, Number(process.env.SYNC_MIN_INTERVAL_HOURS || 12));
 const SYNC_LOCK_PATH = process.env.SYNC_LOCK_PATH || "./data/sync.lock";
 let semanticScholarNoticeShown = false;
 
@@ -57,6 +59,19 @@ const BUILTIN_QUERIES: Record<string, string> = {
   rl_driving: "reinforcement learning autonomous driving policy simulation",
   racing: "autonomous racing high speed control RoboRacer Formula Student",
   safety: "autonomous driving safety verification robustness adversarial",
+};
+
+const BUILTIN_DIRECTION_LABELS: Record<string, string> = {
+  e2e: "端到端自动驾驶",
+  planning: "运动规划与控制",
+  world_model: "驾驶世界模型",
+  llm_driving: "大模型+驾驶",
+  control: "车辆控制",
+  perception: "BEV感知",
+  prediction: "轨迹预测",
+  rl_driving: "强化学习驾驶",
+  racing: "自动驾驶竞赛",
+  safety: "安全验证",
 };
 
 type PaperRecord = {
@@ -111,11 +126,26 @@ function recordSyncError(message: string) {
 
 function acquireSyncLock() {
   try {
-    const descriptor = openSync(SYNC_LOCK_PATH, "wx");
-    closeSync(descriptor);
+    writeFileSync(SYNC_LOCK_PATH, `${process.pid}\n`, { flag: "wx" });
     return true;
   } catch {
-    return false;
+    try {
+      const lockPid = Number(readFileSync(SYNC_LOCK_PATH, "utf8").trim());
+      if (lockPid > 0) {
+        try {
+          process.kill(lockPid, 0);
+          return false;
+        } catch {
+          unlinkSync(SYNC_LOCK_PATH);
+        }
+      } else {
+        unlinkSync(SYNC_LOCK_PATH);
+      }
+      writeFileSync(SYNC_LOCK_PATH, `${process.pid}\n`, { flag: "wx" });
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -416,6 +446,8 @@ function ensureSchema(db: Database.Database) {
     publication_status: "TEXT NOT NULL DEFAULT 'unknown'",
     venue_verified: "INTEGER NOT NULL DEFAULT 0",
     quality_score: "REAL NOT NULL DEFAULT 0",
+    citations_updated_at: "TEXT",
+    venue_confidence: "REAL NOT NULL DEFAULT 0",
   };
   for (const [column, type] of Object.entries(additions)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE papers ADD COLUMN ${column} ${type}`);
@@ -484,7 +516,9 @@ function upsertPaper(
     doi: existing?.doi || paper.doi,
     pdf_url: existing?.pdf_url || paper.pdfUrl,
     direction: existing?.direction || direction.key,
-    direction_label: existing?.direction_label || direction.label,
+    direction_label: existing?.direction_label && existing.direction_label !== existing.direction
+      ? existing.direction_label
+      : direction.label,
     publication_channel: existing?.publication_channel || (paper.venue === "arXiv" ? "arXiv 预印本" : "同行评议"),
     arxiv_id: existing?.arxiv_id || paper.arxivId,
     semantic_scholar_id: existing?.semantic_scholar_id || paper.semanticScholarId,
@@ -515,23 +549,24 @@ function upsertPaper(
     publication_status: metadata.publicationStatus,
     venue_verified: metadata.venueVerified ? 1 : 0,
     quality_score: metadata.qualityScore,
+    venue_confidence: metadata.venueConfidence,
   });
   const changed = !existing || [
     "title", "abstract", "year", "published_date", "venue", "citations", "citation_percentile",
     "authors", "doi", "pdf_url", "publication_channel", "venue_type", "venue_tier", "publication_status",
-    "venue_verified", "quality_score",
+    "venue_verified", "venue_confidence", "quality_score",
     "is_frontier", "is_classic", "discovery_reason", "recommendation_score", "sources",
     "source_ids", "source_urls",
   ].some((key) => String(existing?.[key] ?? "") !== String((values as Record<string, unknown>)[key] ?? ""));
   if (existing) {
-    db.prepare(`UPDATE papers SET title=@title, abstract=@abstract, year=@year, published_date=@published_date, venue=@venue, citations=@citations, citation_percentile=@citation_percentile, authors=@authors, doi=@doi, pdf_url=@pdf_url, direction=@direction, direction_label=@direction_label, publication_channel=@publication_channel, venue_type=@venue_type, venue_tier=@venue_tier, publication_status=@publication_status, venue_verified=@venue_verified, quality_score=@quality_score, is_frontier=@is_frontier, is_classic=@is_classic, discovery_reason=@discovery_reason, recommendation_score=@recommendation_score, last_seen_at=@last_seen_at, arxiv_id=@arxiv_id, semantic_scholar_id=@semantic_scholar_id, normalized_title=@normalized_title, sources=@sources, source_ids=@source_ids, source_urls=@source_urls, is_relevant=@is_relevant, updated_at=CURRENT_TIMESTAMP WHERE id=@id`).run({ ...values, id: existing.id });
+    db.prepare(`UPDATE papers SET title=@title, abstract=@abstract, year=@year, published_date=@published_date, venue=@venue, citations=@citations, citation_percentile=@citation_percentile, authors=@authors, doi=@doi, pdf_url=@pdf_url, direction=@direction, direction_label=@direction_label, publication_channel=@publication_channel, venue_type=@venue_type, venue_tier=@venue_tier, publication_status=@publication_status, venue_verified=@venue_verified, venue_confidence=@venue_confidence, quality_score=@quality_score, is_frontier=@is_frontier, is_classic=@is_classic, discovery_reason=@discovery_reason, recommendation_score=@recommendation_score, last_seen_at=@last_seen_at, arxiv_id=@arxiv_id, semantic_scholar_id=@semantic_scholar_id, normalized_title=@normalized_title, sources=@sources, source_ids=@source_ids, source_urls=@source_urls, is_relevant=@is_relevant, updated_at=CURRENT_TIMESTAMP WHERE id=@id`).run({ ...values, id: existing.id });
     return {
       id: existing.id as number,
       needsEmbedding: !existing.embedding || existing.embedding_model !== embeddingModel,
       changeType: changed ? "updated" as const : "unchanged" as const,
     };
   } else {
-    db.prepare(`INSERT OR IGNORE INTO papers (openalex_id,title,abstract,year,published_date,venue,citations,citation_percentile,authors,doi,pdf_url,direction,direction_label,publication_channel,venue_type,venue_tier,publication_status,venue_verified,quality_score,is_frontier,is_classic,discovery_reason,recommendation_score,last_seen_at,arxiv_id,semantic_scholar_id,normalized_title,sources,source_ids,source_urls,is_relevant) VALUES (@openalex_id,@title,@abstract,@year,@published_date,@venue,@citations,@citation_percentile,@authors,@doi,@pdf_url,@direction,@direction_label,@publication_channel,@venue_type,@venue_tier,@publication_status,@venue_verified,@quality_score,@is_frontier,@is_classic,@discovery_reason,@recommendation_score,@last_seen_at,@arxiv_id,@semantic_scholar_id,@normalized_title,@sources,@source_ids,@source_urls,@is_relevant)`).run(values);
+    db.prepare(`INSERT OR IGNORE INTO papers (openalex_id,title,abstract,year,published_date,venue,citations,citation_percentile,authors,doi,pdf_url,direction,direction_label,publication_channel,venue_type,venue_tier,publication_status,venue_verified,venue_confidence,quality_score,is_frontier,is_classic,discovery_reason,recommendation_score,last_seen_at,arxiv_id,semantic_scholar_id,normalized_title,sources,source_ids,source_urls,is_relevant) VALUES (@openalex_id,@title,@abstract,@year,@published_date,@venue,@citations,@citation_percentile,@authors,@doi,@pdf_url,@direction,@direction_label,@publication_channel,@venue_type,@venue_tier,@publication_status,@venue_verified,@venue_confidence,@quality_score,@is_frontier,@is_classic,@discovery_reason,@recommendation_score,@last_seen_at,@arxiv_id,@semantic_scholar_id,@normalized_title,@sources,@source_ids,@source_urls,@is_relevant)`).run(values);
     const inserted = findExisting(db, paper);
     return { id: inserted.id as number, needsEmbedding: true, changeType: "inserted" as const };
   }
@@ -551,6 +586,12 @@ function linkPaperDirection(
 
 async function main() {
   const { EMBEDDING_MODEL, embedText, paperEmbeddingText } = await import("../src/lib/semantic-search");
+  const forceSync = process.argv.includes("--force") || process.env.SYNC_FORCE === "1";
+  if (!forceSync && isSyncFresh(SYNC_MIN_INTERVAL_HOURS)) {
+    const status = readSyncStatus();
+    console.log(`最近已同步（${status.finishedAt}），本次跳过。需要强制更新时运行：npm run sync:full -- --force`);
+    return;
+  }
   if (!acquireSyncLock()) {
     console.log("已有同步任务正在运行，本次跳过。");
     return;
@@ -562,7 +603,7 @@ async function main() {
     ensureSchema(db);
     const custom = db.prepare("SELECT key, label, query FROM custom_directions").all() as { key: string; label: string; query: string }[];
     const directions = [
-      ...Object.entries(BUILTIN_QUERIES).map(([key, query]) => ({ key, label: key, query })),
+      ...Object.entries(BUILTIN_QUERIES).map(([key, query]) => ({ key, label: BUILTIN_DIRECTION_LABELS[key] || key, query })),
       ...custom,
     ];
     startSyncStatus(directions.length);
@@ -596,7 +637,7 @@ async function main() {
     };
 
     const builtinDirections = new Map(
-      Object.entries(BUILTIN_QUERIES).map(([key]) => [key, { key, label: key }]),
+      Object.entries(BUILTIN_QUERIES).map(([key]) => [key, { key, label: BUILTIN_DIRECTION_LABELS[key] || key }]),
     );
     for (const seed of CLASSIC_SEEDS) {
       for (const directionKey of seed.directions) {

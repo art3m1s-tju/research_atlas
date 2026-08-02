@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
 import { cosineSimilarity, lexicalScore, parseEmbedding } from "@/lib/semantic-search";
-import { metadataForPaper } from "@/lib/research-ranking";
+import { BUILTIN_DIRECTION_LABELS, metadataForPaper } from "@/lib/research-ranking";
+import { ensureUserStateSchema } from "@/lib/user-state";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 
@@ -49,7 +50,9 @@ function ensureEmbeddingSchema(db: Database.Database) {
   if (!columns.has("last_seen_at")) db.exec("ALTER TABLE papers ADD COLUMN last_seen_at TEXT");
   if (!columns.has("publication_status")) db.exec("ALTER TABLE papers ADD COLUMN publication_status TEXT NOT NULL DEFAULT 'unknown'");
   if (!columns.has("venue_verified")) db.exec("ALTER TABLE papers ADD COLUMN venue_verified INTEGER NOT NULL DEFAULT 0");
+  if (!columns.has("venue_confidence")) db.exec("ALTER TABLE papers ADD COLUMN venue_confidence REAL NOT NULL DEFAULT 0");
   if (!columns.has("quality_score")) db.exec("ALTER TABLE papers ADD COLUMN quality_score REAL NOT NULL DEFAULT 0");
+  if (!columns.has("citations_updated_at")) db.exec("ALTER TABLE papers ADD COLUMN citations_updated_at TEXT");
   db.exec(`
     CREATE TABLE IF NOT EXISTS paper_directions (
       paper_id INTEGER NOT NULL,
@@ -70,6 +73,10 @@ function ensureEmbeddingSchema(db: Database.Database) {
     FROM papers
     WHERE direction IS NOT NULL AND direction != ''
   `);
+  for (const [key, label] of Object.entries(BUILTIN_DIRECTION_LABELS)) {
+    db.prepare("UPDATE paper_directions SET direction_label = ? WHERE direction = ? AND direction_label = direction").run(label, key);
+    db.prepare("UPDATE papers SET direction_label = ? WHERE direction = ? AND direction_label = direction").run(label, key);
+  }
 }
 
 function refreshRecommendationMetadata(db: Database.Database) {
@@ -105,8 +112,8 @@ function refreshRecommendationMetadata(db: Database.Database) {
         metadata.recommendationScore,
         paper.id,
       );
-      db.prepare("UPDATE papers SET publication_status = ?, venue_verified = ?, quality_score = ? WHERE id = ?")
-        .run(metadata.publicationStatus, metadata.venueVerified ? 1 : 0, metadata.qualityScore, paper.id);
+      db.prepare("UPDATE papers SET publication_status = ?, venue_verified = ?, venue_confidence = ?, quality_score = ? WHERE id = ?")
+        .run(metadata.publicationStatus, metadata.venueVerified ? 1 : 0, metadata.venueConfidence, metadata.qualityScore, paper.id);
     }
   });
   transaction();
@@ -121,6 +128,7 @@ export async function GET(request: Request) {
   try {
     const db = new Database(DB_PATH);
     ensureEmbeddingSchema(db);
+    ensureUserStateSchema(db);
     refreshRecommendationMetadata(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS custom_directions (
@@ -149,6 +157,7 @@ export async function GET(request: Request) {
       params.push(direction);
     }
     conditions.push("(is_relevant IS NULL OR is_relevant != 0)");
+    conditions.push("NOT EXISTS (SELECT 1 FROM paper_user_state WHERE paper_id = papers.id AND is_hidden = 1)");
     if (view === "frontier") conditions.push("is_frontier = 1");
     if (view === "classic") conditions.push("is_classic = 1");
     if (conditions.length > 0) {
@@ -210,6 +219,14 @@ export async function GET(request: Request) {
       list.push({ key: row.direction, label: row.direction_label });
       paperDirections.set(row.paper_id, list);
     }
+    const userStates = papers.length
+      ? db.prepare(`
+          SELECT paper_id, is_read, is_saved, is_hidden, note
+          FROM paper_user_state
+          WHERE paper_id IN (${papers.map(() => "?").join(",")})
+        `).all(...papers.map((paper) => paper.id)) as { paper_id: number; is_read: number; is_saved: number; is_hidden: number; note: string }[]
+      : [];
+    const userStateMap = new Map(userStates.map((state) => [state.paper_id, state]));
 
     db.close();
     
@@ -221,6 +238,7 @@ export async function GET(request: Request) {
         year: p.year,
         venue: p.venue || "",
         citations: p.citations || 0,
+        citationsUpdatedAt: p.citations_updated_at || null,
         citationPercentile: p.citation_percentile || null,
         abstract: p.abstract || "",
         direction: p.direction,
@@ -240,6 +258,7 @@ export async function GET(request: Request) {
         publicationChannel: p.publication_channel || (p.venue === "arXiv" ? "arXiv 预印本" : "同行评议渠道待核实"),
         publicationStatus: p.publication_status || "unknown",
         venueVerified: Boolean(p.venue_verified),
+        venueConfidence: p.venue_confidence || 0,
         qualityScore: p.quality_score || 0,
         venueType: p.venue_type || "unknown",
         venueTier: p.venue_tier || 0,
@@ -247,6 +266,12 @@ export async function GET(request: Request) {
         isClassic: Boolean(p.is_classic),
         discoveryReason: p.discovery_reason || "方向相关",
         recommendationScore: p.recommendation_score || 0,
+        userState: {
+          isRead: Boolean(userStateMap.get(p.id)?.is_read),
+          isSaved: Boolean(userStateMap.get(p.id)?.is_saved),
+          isHidden: Boolean(userStateMap.get(p.id)?.is_hidden),
+          note: userStateMap.get(p.id)?.note || "",
+        },
       })),
       searchMode,
     });
