@@ -107,6 +107,7 @@ function ensurePaperColumns(db: Database.Database) {
   const optionalColumns: Record<string, string> = {
     direction_label: "TEXT",
     publication_channel: "TEXT",
+    is_relevant: "INTEGER NOT NULL DEFAULT 1",
   };
   for (const [column, type] of Object.entries(optionalColumns)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE papers ADD COLUMN ${column} ${type}`);
@@ -118,7 +119,7 @@ export async function GET() {
   try {
     ensurePaperColumns(db);
     const counts = db.prepare(
-      "SELECT direction, COUNT(*) as count FROM papers GROUP BY direction"
+      "SELECT direction, COUNT(*) as count FROM papers WHERE is_relevant IS NULL OR is_relevant != 0 GROUP BY direction"
     ).all() as { direction: string; count: number }[];
     const custom = db.prepare(
       "SELECT key, label, color FROM custom_directions ORDER BY created_at"

@@ -13,6 +13,7 @@
     "sync:custom": "tsx scripts/sync-multi-source.ts",
     "embeddings:backfill": "tsx scripts/embed-papers.ts",
     "summarize:papers": "tsx scripts/summarize-papers.ts",
+    "clean:relevance": "tsx scripts/clean-relevance.ts",
     "sync:incremental": "tsx scripts/update-citations.ts"
   },
   "dependencies": {

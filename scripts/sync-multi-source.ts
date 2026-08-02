@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { existsSync, readFileSync } from "node:fs";
+import { isLikelyRelevant } from "../src/lib/relevance";
 
 function loadLocalEnv() {
   const envPath = ".env.local";
@@ -101,14 +102,14 @@ function sourceUrl(paper: any, source: string) {
   return null;
 }
 
-async function fetchOpenAlex(query: string): Promise<PaperRecord[]> {
+async function fetchOpenAlex(query: string, directionKey: string, directionLabel: string): Promise<PaperRecord[]> {
   if (!OPENALEX_API_KEY) {
     console.log("  OpenAlex skipped: OPENALEX_API_KEY is not configured");
     return [];
   }
   const params = new URLSearchParams({
     search: query,
-    per_page: "30",
+    per_page: "60",
     sort: "cited_by_count:desc",
     select: "id,title,authorships,publication_year,primary_location,cited_by_count,abstract_inverted_index,doi,locations",
     api_key: OPENALEX_API_KEY,
@@ -138,18 +139,18 @@ async function fetchOpenAlex(query: string): Promise<PaperRecord[]> {
         sourceIds: { openalex: paper.id },
         sourceUrls: { OpenAlex: paper.id },
       };
-    });
+    }).filter((paper: PaperRecord) => isLikelyRelevant(paper, directionKey, directionLabel, query)).slice(0, 30);
   } catch (error) {
     console.error(`  OpenAlex failed: ${error instanceof Error ? error.message : error}`);
     return [];
   }
 }
 
-async function fetchArxiv(query: string): Promise<PaperRecord[]> {
+async function fetchArxiv(query: string, directionKey: string, directionLabel: string): Promise<PaperRecord[]> {
   const params = new URLSearchParams({
     search_query: `all:${query}`,
     start: "0",
-    max_results: "30",
+    max_results: "60",
     sortBy: "submittedDate",
     sortOrder: "descending",
   });
@@ -185,14 +186,14 @@ async function fetchArxiv(query: string): Promise<PaperRecord[]> {
         sourceUrls: { arXiv: `https://arxiv.org/abs/${id}` },
       });
     }
-    return results;
+    return results.filter((paper) => isLikelyRelevant(paper, directionKey, directionLabel, query)).slice(0, 30);
   } catch (error) {
     console.error(`  arXiv failed: ${error instanceof Error ? error.message : error}`);
     return [];
   }
 }
 
-async function fetchSemanticScholar(query: string): Promise<PaperRecord[]> {
+async function fetchSemanticScholar(query: string, directionKey: string, directionLabel: string): Promise<PaperRecord[]> {
   if (!SEMANTIC_SCHOLAR_API_KEY) {
     if (!semanticScholarNoticeShown) {
       console.log("  Semantic Scholar 未配置（可选），本次跳过补充引用数据");
@@ -230,7 +231,7 @@ async function fetchSemanticScholar(query: string): Promise<PaperRecord[]> {
         sourceIds: { semanticScholar: paper.paperId },
         sourceUrls: { "Semantic Scholar": paper.url || `https://www.semanticscholar.org/paper/${paper.paperId}` },
       };
-    });
+    }).filter((paper: PaperRecord) => isLikelyRelevant(paper, directionKey, directionLabel, query)).slice(0, 30);
   } catch (error) {
     console.error(`  Semantic Scholar failed: ${error instanceof Error ? error.message : error}`);
     return [];
@@ -324,6 +325,7 @@ function ensureSchema(db: Database.Database) {
     summary_model: "TEXT",
     summary_source_hash: "TEXT",
     summary_updated_at: "TEXT",
+    is_relevant: "INTEGER NOT NULL DEFAULT 1",
   };
   for (const [column, type] of Object.entries(additions)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE papers ADD COLUMN ${column} ${type}`);
@@ -390,15 +392,16 @@ function upsertPaper(
     sources: JSON.stringify(mergedSources),
     source_ids: JSON.stringify(mergedIds),
     source_urls: JSON.stringify(mergedUrls),
+    is_relevant: 1,
   };
   if (existing) {
-    db.prepare(`UPDATE papers SET title=@title, abstract=@abstract, year=@year, venue=@venue, citations=@citations, authors=@authors, doi=@doi, pdf_url=@pdf_url, direction=@direction, direction_label=@direction_label, publication_channel=@publication_channel, arxiv_id=@arxiv_id, semantic_scholar_id=@semantic_scholar_id, normalized_title=@normalized_title, sources=@sources, source_ids=@source_ids, source_urls=@source_urls, updated_at=CURRENT_TIMESTAMP WHERE id=@id`).run({ ...values, id: existing.id });
+    db.prepare(`UPDATE papers SET title=@title, abstract=@abstract, year=@year, venue=@venue, citations=@citations, authors=@authors, doi=@doi, pdf_url=@pdf_url, direction=@direction, direction_label=@direction_label, publication_channel=@publication_channel, arxiv_id=@arxiv_id, semantic_scholar_id=@semantic_scholar_id, normalized_title=@normalized_title, sources=@sources, source_ids=@source_ids, source_urls=@source_urls, is_relevant=@is_relevant, updated_at=CURRENT_TIMESTAMP WHERE id=@id`).run({ ...values, id: existing.id });
     return {
       id: existing.id as number,
       needsEmbedding: !existing.embedding || existing.embedding_model !== embeddingModel,
     };
   } else {
-    db.prepare(`INSERT OR IGNORE INTO papers (openalex_id,title,abstract,year,venue,citations,authors,doi,pdf_url,direction,direction_label,publication_channel,arxiv_id,semantic_scholar_id,normalized_title,sources,source_ids,source_urls) VALUES (@openalex_id,@title,@abstract,@year,@venue,@citations,@authors,@doi,@pdf_url,@direction,@direction_label,@publication_channel,@arxiv_id,@semantic_scholar_id,@normalized_title,@sources,@source_ids,@source_urls)`).run(values);
+    db.prepare(`INSERT OR IGNORE INTO papers (openalex_id,title,abstract,year,venue,citations,authors,doi,pdf_url,direction,direction_label,publication_channel,arxiv_id,semantic_scholar_id,normalized_title,sources,source_ids,source_urls,is_relevant) VALUES (@openalex_id,@title,@abstract,@year,@venue,@citations,@authors,@doi,@pdf_url,@direction,@direction_label,@publication_channel,@arxiv_id,@semantic_scholar_id,@normalized_title,@sources,@source_ids,@source_urls,@is_relevant)`).run(values);
     const inserted = findExisting(db, paper);
     return { id: inserted.id as number, needsEmbedding: true };
   }
@@ -418,9 +421,9 @@ async function main() {
   for (const direction of directions) {
     console.log(`\n📚 ${direction.label} (${direction.key})`);
     const records = [
-      ...(await fetchOpenAlex(direction.query)),
-      ...(await fetchArxiv(direction.query)),
-      ...(await fetchSemanticScholar(direction.query)),
+      ...(await fetchOpenAlex(direction.query, direction.key, direction.label)),
+      ...(await fetchArxiv(direction.query, direction.key, direction.label)),
+      ...(await fetchSemanticScholar(direction.query, direction.key, direction.label)),
     ];
     const deduped = new Map<string, PaperRecord>();
     for (const record of records) {

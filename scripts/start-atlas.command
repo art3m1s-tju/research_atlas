@@ -75,6 +75,11 @@ npm run sync:full || {
   echo "同步失败，仍尝试启动网页。"
 }
 
+echo "正在清理不相关论文..."
+npm run clean:relevance || {
+  echo "相关性清理失败，仍尝试启动网页。"
+}
+
 echo "正在检查语义向量..."
 npm run embeddings:backfill || {
   echo "语义向量回填失败，仍尝试启动网页。"

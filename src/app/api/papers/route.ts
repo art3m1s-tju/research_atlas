@@ -36,6 +36,7 @@ function ensureEmbeddingSchema(db: Database.Database) {
   if (!columns.has("summary_model")) db.exec("ALTER TABLE papers ADD COLUMN summary_model TEXT");
   if (!columns.has("summary_source_hash")) db.exec("ALTER TABLE papers ADD COLUMN summary_source_hash TEXT");
   if (!columns.has("summary_updated_at")) db.exec("ALTER TABLE papers ADD COLUMN summary_updated_at TEXT");
+  if (!columns.has("is_relevant")) db.exec("ALTER TABLE papers ADD COLUMN is_relevant INTEGER NOT NULL DEFAULT 1");
 }
 
 export async function GET(request: Request) {
@@ -72,6 +73,7 @@ export async function GET(request: Request) {
       conditions.push("direction = ?");
       params.push(direction);
     }
+    conditions.push("(is_relevant IS NULL OR is_relevant != 0)");
     if (conditions.length > 0) {
       query += " WHERE " + conditions.join(" AND ");
     }
