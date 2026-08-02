@@ -26,6 +26,8 @@ npm run dev -- --port 3100
 
 打开 <http://localhost:3100>。
 
+在 macOS 上也可以直接双击项目根目录的 `启动 AI Research Atlas.command`。它会自动检查依赖、读取本机 API 配置、同步论文、启动服务并打开浏览器。API Key 优先从 `.env.local` 读取，并会自动保存到 macOS 钥匙串作为后续启动的备用配置；密钥不会进入 GitHub。
+
 ## 数据源配置
 
 在 `.env.local` 中填写：
