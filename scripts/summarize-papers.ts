@@ -56,6 +56,7 @@ function ensureSchema(db: Database.Database) {
     summary_model: "TEXT",
     summary_source_hash: "TEXT",
     summary_updated_at: "TEXT",
+    is_relevant: "INTEGER NOT NULL DEFAULT 1",
   };
   for (const [column, type] of Object.entries(additions)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE papers ADD COLUMN ${column} ${type}`);
@@ -158,6 +159,7 @@ async function main() {
   const allPapers = db.prepare(`
     SELECT id, title, abstract, authors, year, venue, doi, summary_model, summary_source_hash
     FROM papers
+    WHERE is_relevant IS NULL OR is_relevant != 0
     ORDER BY citations DESC, year DESC
   `).all() as Paper[];
   const papers = allPapers
