@@ -55,6 +55,8 @@ interface SidebarProps {
   } | null;
   onAddDirection: (label: string, query: string) => Promise<void>;
   onImportComplete?: () => Promise<void> | void;
+  mobileOpen?: boolean;
+  onCloseMobile?: () => void;
 }
 
 export default function Sidebar({
@@ -66,6 +68,8 @@ export default function Sidebar({
   syncStatus,
   onAddDirection,
   onImportComplete,
+  mobileOpen = false,
+  onCloseMobile,
 }: SidebarProps) {
   const [showForm, setShowForm] = React.useState(false);
   const [label, setLabel] = React.useState("");
@@ -195,17 +199,16 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="w-64 bg-white border-r border-gray-200 flex flex-col h-screen sticky top-0">
+    <aside className={`${mobileOpen ? "fixed inset-y-0 left-0 z-40 flex w-72 shadow-xl" : "hidden md:flex md:w-64"} bg-white border-r border-gray-200 flex-col h-screen sticky top-0`}>
       <div className="px-6 py-5 border-b border-gray-200">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-lg font-semibold text-gray-900">研究方向</h2>
-          <button
-            type="button"
-            onClick={() => setShowForm((open) => !open)}
-            className="text-xs font-medium text-blue-600 hover:text-blue-800"
-          >
-            {showForm ? "收起" : "＋ 新增"}
-          </button>
+          <div className="flex items-center gap-3">
+            {mobileOpen && <button type="button" onClick={onCloseMobile} className="text-xs text-gray-500">关闭</button>}
+            <button type="button" onClick={() => setShowForm((open) => !open)} className="text-xs font-medium text-blue-600 hover:text-blue-800">
+              {showForm ? "收起" : "＋ 新增"}
+            </button>
+          </div>
         </div>
         <button
           type="button"

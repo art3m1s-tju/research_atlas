@@ -99,6 +99,7 @@ export default function Home() {
   const [searchScope, setSearchScope] = useState<"library" | "openalex">("library");
   const [externalPapers, setExternalPapers] = useState<SearchPaper[]>([]);
   const [searchError, setSearchError] = useState("");
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const previousSyncState = useRef<string>("idle");
 
   useEffect(() => {
@@ -201,7 +202,8 @@ export default function Home() {
   const viewLabel = searchScope === "openalex" && search ? "OpenAlex 全网结果" : view === "frontier" ? "前沿论文" : view === "classic" ? "经典必读" : "我的推荐";
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex min-h-screen bg-gray-50">
+      {mobileSidebarOpen && <button type="button" aria-label="关闭研究方向菜单" onClick={() => setMobileSidebarOpen(false)} className="fixed inset-0 z-30 bg-slate-900/30 md:hidden" />}
       <Sidebar
         directions={directions}
         selected={selected}
@@ -211,14 +213,17 @@ export default function Home() {
         syncStatus={syncStatus}
         onAddDirection={handleAddDirection}
         onImportComplete={loadData}
+        mobileOpen={mobileSidebarOpen}
+        onCloseMobile={() => setMobileSidebarOpen(false)}
       />
 
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-7xl mx-auto px-8 py-8">
+      <main className="min-w-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-7xl px-4 py-5 sm:px-8 sm:py-8">
           {/* Header */}
           <div className="mb-8">
-            <div className="flex items-center justify-between mb-4">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
+                <button type="button" onClick={() => setMobileSidebarOpen(true)} className="mb-3 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 md:hidden">☰ 研究方向</button>
                 <h1 className="text-3xl font-bold text-gray-900 mb-1">
                   AI Research Atlas
                 </h1>
@@ -226,7 +231,7 @@ export default function Home() {
                   自动驾驶论文知识图谱 · 聚焦端到端、规划控制、世界模型
                 </p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2">
                 <DeepSeekBadge />
                 <button
                   onClick={() => window.open("obsidian://open?vault=Research", "_blank")}

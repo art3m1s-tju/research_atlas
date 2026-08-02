@@ -61,6 +61,21 @@ npm run dev -- --port 3100
 
 在 macOS 上也可以直接双击项目根目录的 `启动 AI Research Atlas.command`。它会自动检查依赖、读取本机 API 配置、先启动网页，再在后台同步论文、补齐语义向量和生成中文解读。API Key 优先从 `.env.local` 读取，并会自动保存到 macOS 钥匙串作为后续启动的备用配置；密钥不会进入 GitHub。
 
+### 通过 Tailscale 在 iPhone 上访问
+
+Atlas 可以部署在常开着的 Mac 或 Ubuntu 主机上，iPhone 只要加入同一个 Tailscale tailnet，就能在浏览器中查询论文、收藏和打开阅读页面。项目提供了 `启动 AI Research Atlas（Tailscale）.command`（Mac）和 `npm run start:tailscale`（Mac/Ubuntu）：它会启动生产版网页，并用 `tailscale serve` 只在你的 tailnet 内提供 HTTPS 入口，不使用公网 Funnel。
+
+首次配置：
+
+1. 在主机和 iPhone 安装 Tailscale，并登录同一个账号/组织。
+2. 在主机运行 `tailscale status`，确认主机在线。
+3. Mac 双击 `启动 AI Research Atlas（Tailscale）.command`；Ubuntu 在项目目录运行 `npm run start:tailscale`。
+4. 查看命令输出的 `tailscale serve status` 地址，在 iPhone Safari 打开。也可以使用主机的 `100.x.y.z` 地址加端口访问，例如 `http://100.x.y.z:3210`。
+
+首次使用 `tailscale serve` 可能会要求在 Tailscale 页面启用 HTTPS 证书。不要使用 `tailscale funnel`，否则会把服务暴露给整个互联网。Tailscale 的访问控制仍由 tailnet ACL 生效；建议只把自己的设备加入 tailnet，并保持 `.env.local`、SQLite 数据库和日志留在主机上。
+
+移动端已提供研究方向抽屉布局，适合 iPhone 查询、收藏和阅读。若希望主机重启后自动启动，可以再把 `npm run start:tailscale` 配置成 macOS launchd 或 Ubuntu systemd 服务。
+
 ## 数据源配置
 
 在 `.env.local` 中填写：

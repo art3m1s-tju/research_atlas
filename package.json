@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "start:tailscale": "bash scripts/start-atlas-tailscale.sh",
     "lint": "next lint",
     "db:seed": "tsx scripts/seed.ts",
     "db:reset": "rm -f data/atlas.db && npm run db:seed",
