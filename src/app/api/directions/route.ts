@@ -121,6 +121,9 @@ export async function GET() {
     const counts = db.prepare(
       "SELECT direction, COUNT(*) as count FROM papers WHERE is_relevant IS NULL OR is_relevant != 0 GROUP BY direction"
     ).all() as { direction: string; count: number }[];
+    const databaseStats = db.prepare(
+      "SELECT COUNT(*) as total, SUM(CASE WHEN is_relevant = 0 THEN 1 ELSE 0 END) as hidden FROM papers"
+    ).get() as { total: number; hidden: number };
     const custom = db.prepare(
       "SELECT key, label, color FROM custom_directions ORDER BY created_at"
     ).all() as { key: string; label: string; color: string }[];
@@ -128,6 +131,11 @@ export async function GET() {
     const total = counts.reduce((sum, item) => sum + item.count, 0);
 
     return NextResponse.json({
+      databaseStats: {
+        total: databaseStats.total,
+        hidden: databaseStats.hidden || 0,
+        visible: databaseStats.total - (databaseStats.hidden || 0),
+      },
       directions: [
         { key: "all", label: "全部方向", count: total, color: "#d4a017" },
         ...BUILTIN_DIRECTIONS.map((direction) => ({

@@ -28,9 +28,16 @@ interface Direction {
   color: string;
 }
 
+interface DatabaseStats {
+  total: number;
+  visible: number;
+  hidden: number;
+}
+
 export default function Home() {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [directions, setDirections] = useState<Direction[]>([]);
+  const [databaseStats, setDatabaseStats] = useState<DatabaseStats | null>(null);
   const [selected, setSelected] = useState("all");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
@@ -60,6 +67,7 @@ export default function Home() {
       setPapers(papersData.papers || []);
       setSearchMode(papersData.searchMode || "citations");
       setDirections(dirsData.directions || []);
+      setDatabaseStats(dirsData.databaseStats || null);
     } catch (error) {
       console.error("Load error:", error);
     }
@@ -157,6 +165,11 @@ export default function Home() {
               <p className="text-sm text-gray-600 mt-1">
                 {loading ? "加载中..." : `${currentCount} 篇论文`}
               </p>
+              {!loading && databaseStats && (
+                <p className="mt-1 text-xs text-gray-400">
+                  数据库共 {databaseStats.total} 条，隐藏低相关 {databaseStats.hidden} 条
+                </p>
+              )}
             </div>
             <div className="flex gap-2 text-sm">
               {search && searchMode === "hybrid" && (
