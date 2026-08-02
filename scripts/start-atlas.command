@@ -73,6 +73,11 @@ npm run sync:full || {
   echo "同步失败，仍尝试启动网页。"
 }
 
+echo "正在检查语义向量..."
+npm run embeddings:backfill || {
+  echo "语义向量回填失败，仍尝试启动网页。"
+}
+
 echo "正在启动网页..."
 npm run dev -- --port "$PORT" &
 DEV_PID=$!
