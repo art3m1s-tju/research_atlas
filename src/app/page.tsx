@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Sidebar from "@/components/Sidebar";
 import PaperCard from "@/components/PaperCard";
 import DailyRecommendations from "@/components/DailyRecommendations";
+import SearchResultCard from "@/components/SearchResultCard";
 
 interface Paper {
   id: string;
@@ -54,6 +55,20 @@ interface DatabaseStats {
   hidden: number;
 }
 
+interface SearchPaper {
+  id: string;
+  title: string;
+  authors: string;
+  year: number | null;
+  venue: string;
+  citations: number;
+  abstract: string;
+  doi: string | null;
+  pdfUrl: string | null;
+  sourceUrl: string;
+  source: string;
+}
+
 interface SyncStatus {
   state: "idle" | "running" | "completed" | "failed";
   phase: string;
@@ -80,12 +95,15 @@ export default function Home() {
   const [syncing, setSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [searchMode, setSearchMode] = useState("recommended");
+  const [searchScope, setSearchScope] = useState<"library" | "openalex">("library");
+  const [externalPapers, setExternalPapers] = useState<SearchPaper[]>([]);
+  const [searchError, setSearchError] = useState("");
   const previousSyncState = useRef<string>("idle");
 
   useEffect(() => {
     const timer = window.setTimeout(loadData, search ? 300 : 0);
     return () => window.clearTimeout(timer);
-  }, [selected, search, view]);
+  }, [selected, search, view, searchScope]);
 
   useEffect(() => {
     let active = true;
@@ -122,15 +140,26 @@ export default function Home() {
       params.set("view", view);
       
       const [papersRes, dirsRes] = await Promise.all([
-        fetch(`/api/papers?${params}`),
+        searchScope === "openalex" && search.trim()
+          ? fetch(`/api/search?query=${encodeURIComponent(search.trim())}&limit=30`)
+          : fetch(`/api/papers?${params}`),
         fetch("/api/directions"),
       ]);
-      
+
       const papersData = await papersRes.json();
       const dirsData = await dirsRes.json();
-      
-      setPapers(papersData.papers || []);
-      setSearchMode(papersData.searchMode || "citations");
+
+      if (searchScope === "openalex" && search.trim()) {
+        setExternalPapers(papersData.papers || []);
+        setPapers([]);
+        setSearchMode("OpenAlex 全网搜索");
+        setSearchError(papersData.error || "");
+      } else {
+        setExternalPapers([]);
+        setPapers(papersData.papers || []);
+        setSearchMode(papersData.searchMode || "citations");
+        setSearchError("");
+      }
       setDirections(dirsData.directions || []);
       setDatabaseStats(dirsData.databaseStats || null);
     } catch (error) {
@@ -167,8 +196,8 @@ export default function Home() {
 
   const currentDir = directions.find(d => d.key === selected);
   const currentLabel = currentDir?.label || "全部方向";
-  const currentCount = view === "recommended" && !search ? currentDir?.count || papers.length : papers.length;
-  const viewLabel = view === "frontier" ? "前沿论文" : view === "classic" ? "经典必读" : "我的推荐";
+  const currentCount = searchScope === "openalex" && search ? externalPapers.length : view === "recommended" && !search ? currentDir?.count || papers.length : papers.length;
+  const viewLabel = searchScope === "openalex" && search ? "OpenAlex 全网结果" : view === "frontier" ? "前沿论文" : view === "classic" ? "经典必读" : "我的推荐";
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -222,6 +251,17 @@ export default function Home() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
             </div>
+            <div className="mt-2 flex gap-2">
+              {[
+                ["library", "搜索本地 Atlas"],
+                ["openalex", "搜索 OpenAlex 全网"],
+              ].map(([key, label]) => (
+                <button key={key} type="button" onClick={() => setSearchScope(key as "library" | "openalex")} className={`rounded-full border px-3 py-1 text-xs ${searchScope === key ? "border-blue-600 bg-blue-600 text-white" : "border-gray-200 bg-white text-gray-600 hover:border-blue-300"}`}>
+                  {label}
+                </button>
+              ))}
+              {searchScope === "openalex" && <span className="self-center text-xs text-gray-500">搜索结果可直接收藏入库</span>}
+            </div>
           </div>
 
           {/* Stats */}
@@ -248,7 +288,7 @@ export default function Home() {
 
           <DailyRecommendations />
 
-          <div className="mb-6 flex flex-wrap gap-2">
+          {searchScope === "library" && <div className="mb-6 flex flex-wrap gap-2">
             {[
               { key: "recommended", label: "我的推荐", hint: "前沿优先" },
               { key: "frontier", label: "前沿论文", hint: "近两年" },
@@ -269,7 +309,7 @@ export default function Home() {
                 </span>
               </button>
             ))}
-          </div>
+          </div>}
 
           {/* Papers Grid */}
           {loading ? (
@@ -285,6 +325,12 @@ export default function Home() {
                 </div>
               ))}
             </div>
+          ) : searchScope === "openalex" && search ? (
+            externalPapers.length === 0 ? (
+              <div className="py-20 text-center text-gray-500">{searchError || "没有找到 OpenAlex 结果，尝试论文标题、DOI 或关键词。"}</div>
+            ) : (
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">{externalPapers.map((paper) => <SearchResultCard key={paper.id} paper={paper} />)}</div>
+            )
           ) : papers.length === 0 ? (
             <div className="text-center py-20">
               <div className="text-6xl mb-4">📚</div>

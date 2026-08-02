@@ -1,0 +1,4 @@
+interface:
+  display_name: "Atlas Paper Translate"
+  short_description: "Translate papers into accurate Chinese reading packages"
+  default_prompt: "Use $atlas-paper-translate to translate this academic paper into a traceable Chinese or bilingual Markdown reading package."
