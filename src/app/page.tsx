@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Sidebar from "@/components/Sidebar";
 import PaperCard from "@/components/PaperCard";
 
@@ -17,6 +17,7 @@ interface Paper {
   pdfUrl: string | null;
   directionLabel?: string;
   directionColor?: string;
+  directions?: { key: string; label: string }[];
   sources?: string[];
   sourceUrls?: Record<string, string>;
   citationPercentile?: number | null;
@@ -32,6 +33,9 @@ interface Paper {
   resultsZh?: string | null;
   limitationsZh?: string | null;
   publicationChannel?: string;
+  publicationStatus?: string;
+  venueVerified?: boolean;
+  qualityScore?: number;
 }
 
 interface Direction {
@@ -47,6 +51,21 @@ interface DatabaseStats {
   hidden: number;
 }
 
+interface SyncStatus {
+  state: "idle" | "running" | "completed" | "failed";
+  phase: string;
+  message: string;
+  currentDirection: string | null;
+  completedDirections: number;
+  totalDirections: number;
+  recordsFetched: number;
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  duplicates: number;
+  errors: string[];
+}
+
 export default function Home() {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [directions, setDirections] = useState<Direction[]>([]);
@@ -56,12 +75,40 @@ export default function Home() {
   const [view, setView] = useState("recommended");
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [searchMode, setSearchMode] = useState("recommended");
+  const previousSyncState = useRef<string>("idle");
 
   useEffect(() => {
     const timer = window.setTimeout(loadData, search ? 300 : 0);
     return () => window.clearTimeout(timer);
   }, [selected, search, view]);
+
+  useEffect(() => {
+    let active = true;
+    async function pollSyncStatus() {
+      try {
+        const response = await fetch("/api/sync/status", { cache: "no-store" });
+        const data = await response.json();
+        if (!active || !data.status) return;
+        const status = data.status as SyncStatus;
+        setSyncStatus(status);
+        setSyncing(status.state === "running");
+        if (previousSyncState.current === "running" && status.state !== "running") {
+          await loadData();
+        }
+        previousSyncState.current = status.state;
+      } catch {
+        // The page remains usable if the optional status endpoint is unavailable.
+      }
+    }
+    pollSyncStatus();
+    const timer = window.setInterval(pollSyncStatus, 2500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   async function loadData() {
     setLoading(true);
@@ -94,9 +141,7 @@ export default function Home() {
     try {
       const res = await fetch("/api/sync", { method: "POST" });
       const data = await res.json();
-      if (data.success) {
-        await loadData();
-      } else {
+      if (!res.ok || !data.success) {
         alert("同步失败：" + (data.error || "未知错误"));
       }
     } catch (error) {
@@ -130,6 +175,7 @@ export default function Home() {
         onSelect={setSelected}
         onSync={handleSync}
         syncing={syncing}
+        syncStatus={syncStatus}
         onAddDirection={handleAddDirection}
       />
 

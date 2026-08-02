@@ -1,4 +1,5 @@
 export type VenueType = "conference" | "journal" | "preprint" | "unknown";
+export type PublicationStatus = "published" | "preprint" | "workshop" | "unknown";
 
 export type VenueTier = 0 | 1 | 2 | 3;
 
@@ -143,10 +144,24 @@ export function classifyVenue(venue: string | null | undefined, publicationChann
   };
   for (const candidate of VENUE_TIERS) {
     if (candidate.labels.some(matchesLabel)) {
-      return { venueType, venueTier: candidate.tier };
+      return {
+        venueType,
+        venueTier: candidate.tier,
+        publicationStatus: value.includes("workshop") ? "workshop" as PublicationStatus : venueType === "preprint" ? "preprint" as PublicationStatus : "published" as PublicationStatus,
+      };
     }
   }
-  return { venueType, venueTier: 0 as VenueTier };
+  return {
+    venueType,
+    venueTier: 0 as VenueTier,
+    publicationStatus: value.includes("workshop")
+      ? "workshop" as PublicationStatus
+      : venueType === "preprint"
+        ? "preprint" as PublicationStatus
+        : venueType === "conference" || venueType === "journal"
+          ? "published" as PublicationStatus
+          : "unknown" as PublicationStatus,
+  };
 }
 
 export function isFrontierPaper(year: number | null | undefined, publishedDate?: string | null, now = new Date()) {
@@ -207,6 +222,7 @@ export function metadataForPaper(paper: {
   publication_channel?: string | null;
   citations?: number | null;
   citation_percentile?: number | null;
+  sources?: string[] | null;
 }) {
   const seed = getClassicSeed(paper.title);
   const venue = classifyVenue(paper.venue, paper.publication_channel);
@@ -214,6 +230,7 @@ export function metadataForPaper(paper: {
   const isFrontier = !isClassic && isFrontierPaper(paper.year, paper.published_date);
   const enriched = {
     ...venue,
+    venueVerified: Boolean(paper.venue && (paper.sources || []).length > 0),
     isClassic,
     isFrontier,
     discoveryReason: discoveryReason({
@@ -225,6 +242,7 @@ export function metadataForPaper(paper: {
   };
   return {
     ...enriched,
+    qualityScore: 0.6 * (venue.venueTier / 3) + 0.4 * citationQuality(paper.citations, paper.citation_percentile),
     recommendationScore: recommendationScore({
       year: paper.year,
       published_date: paper.published_date,

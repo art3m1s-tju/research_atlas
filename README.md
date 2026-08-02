@@ -5,7 +5,9 @@
 ## 当前能力
 
 - 多数据源论文同步：OpenAlex、arXiv、Crossref、Unpaywall；Semantic Scholar 可选
+- 网页先启动、论文同步在后台执行，并提供方向进度、新增/更新/无变化统计和错误记录
 - 按方向筛选、全文搜索，默认以前沿优先的推荐分数排序
+- 一篇论文可同时属于多个研究方向，相关性按“论文-方向”分别判断
 - 前沿论文、经典必读、我的推荐三种阅读视图
 - 识别顶会/顶刊、预印本、经典论文和同年份高影响论文
 - 支持新增自定义方向，例如“自动驾驶幻觉控制”
@@ -29,7 +31,7 @@ npm run dev -- --port 3100
 
 打开 <http://localhost:3100>。
 
-在 macOS 上也可以直接双击项目根目录的 `启动 AI Research Atlas.command`。它会自动检查依赖、读取本机 API 配置、同步论文、补齐语义向量、启动服务并打开浏览器。API Key 优先从 `.env.local` 读取，并会自动保存到 macOS 钥匙串作为后续启动的备用配置；密钥不会进入 GitHub。
+在 macOS 上也可以直接双击项目根目录的 `启动 AI Research Atlas.command`。它会自动检查依赖、读取本机 API 配置、先启动网页，再在后台同步论文、补齐语义向量和生成中文解读。API Key 优先从 `.env.local` 读取，并会自动保存到 macOS 钥匙串作为后续启动的备用配置；密钥不会进入 GitHub。
 
 ## 数据源配置
 
@@ -51,6 +53,10 @@ DATABASE_PATH=./data/atlas.db
 # 本地语义检索模型（首次同步时自动下载）
 EMBEDDING_MODEL=Xenova/paraphrase-multilingual-MiniLM-L12-v2
 TRANSFORMERS_CACHE=./.cache/transformers
+
+# 外部论文接口请求控制
+SYNC_REQUEST_TIMEOUT_MS=15000
+SYNC_REQUEST_RETRIES=2
 ```
 
 说明：
@@ -115,6 +121,7 @@ npm run clean:relevance
 ## API
 
 - `GET /api/papers`：论文列表，支持 `direction`、`search` 和 `view=recommended|frontier|classic` 参数
+- `GET /api/sync/status`：后台同步进度、新增/更新统计和可恢复错误
 - `GET /api/directions`：方向和论文数量
 - `POST /api/directions`：新增自定义方向
 - `POST /api/sync`：执行多源同步

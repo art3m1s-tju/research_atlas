@@ -47,11 +47,34 @@ function ensureEmbeddingSchema(db: Database.Database) {
   if (!columns.has("discovery_reason")) db.exec("ALTER TABLE papers ADD COLUMN discovery_reason TEXT NOT NULL DEFAULT '方向相关'");
   if (!columns.has("recommendation_score")) db.exec("ALTER TABLE papers ADD COLUMN recommendation_score REAL NOT NULL DEFAULT 0");
   if (!columns.has("last_seen_at")) db.exec("ALTER TABLE papers ADD COLUMN last_seen_at TEXT");
+  if (!columns.has("publication_status")) db.exec("ALTER TABLE papers ADD COLUMN publication_status TEXT NOT NULL DEFAULT 'unknown'");
+  if (!columns.has("venue_verified")) db.exec("ALTER TABLE papers ADD COLUMN venue_verified INTEGER NOT NULL DEFAULT 0");
+  if (!columns.has("quality_score")) db.exec("ALTER TABLE papers ADD COLUMN quality_score REAL NOT NULL DEFAULT 0");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS paper_directions (
+      paper_id INTEGER NOT NULL,
+      direction TEXT NOT NULL,
+      direction_label TEXT NOT NULL,
+      is_relevant INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (paper_id, direction)
+    )
+  `);
+  const directionColumns = new Set(
+    (db.prepare("PRAGMA table_info(paper_directions)").all() as { name: string }[]).map((column) => column.name),
+  );
+  if (!directionColumns.has("is_relevant")) db.exec("ALTER TABLE paper_directions ADD COLUMN is_relevant INTEGER NOT NULL DEFAULT 1");
+  db.exec(`
+    INSERT OR IGNORE INTO paper_directions (paper_id, direction, direction_label)
+    SELECT id, direction, COALESCE(direction_label, direction)
+    FROM papers
+    WHERE direction IS NOT NULL AND direction != ''
+  `);
 }
 
 function refreshRecommendationMetadata(db: Database.Database) {
   const papers = db.prepare(`
-    SELECT id, title, year, published_date, venue, publication_channel, citations, citation_percentile
+    SELECT id, title, year, published_date, venue, publication_channel, citations, citation_percentile, sources
     FROM papers
   `).all() as Array<{
     id: number;
@@ -62,6 +85,7 @@ function refreshRecommendationMetadata(db: Database.Database) {
     publication_channel: string | null;
     citations: number | null;
     citation_percentile: number | null;
+    sources: string | null;
   }>;
   const update = db.prepare(`
     UPDATE papers
@@ -71,7 +95,7 @@ function refreshRecommendationMetadata(db: Database.Database) {
   `);
   const transaction = db.transaction(() => {
     for (const paper of papers) {
-      const metadata = metadataForPaper(paper);
+      const metadata = metadataForPaper({ ...paper, sources: parseJson(paper.sources, []) });
       update.run(
         metadata.venueType,
         metadata.venueTier,
@@ -81,6 +105,8 @@ function refreshRecommendationMetadata(db: Database.Database) {
         metadata.recommendationScore,
         paper.id,
       );
+      db.prepare("UPDATE papers SET publication_status = ?, venue_verified = ?, quality_score = ? WHERE id = ?")
+        .run(metadata.publicationStatus, metadata.venueVerified ? 1 : 0, metadata.qualityScore, paper.id);
     }
   });
   transaction();
@@ -119,7 +145,7 @@ export async function GET(request: Request) {
     const params: any[] = [];
     
     if (direction !== "all") {
-      conditions.push("direction = ?");
+      conditions.push("id IN (SELECT paper_id FROM paper_directions WHERE direction = ? AND is_relevant != 0)");
       params.push(direction);
     }
     conditions.push("(is_relevant IS NULL OR is_relevant != 0)");
@@ -171,6 +197,20 @@ export async function GET(request: Request) {
         .slice(0, 100);
     }
 
+    const directionRows = papers.length
+      ? db.prepare(`
+          SELECT paper_id, direction, direction_label
+          FROM paper_directions
+          WHERE is_relevant != 0 AND paper_id IN (${papers.map(() => "?").join(",")})
+        `).all(...papers.map((paper) => paper.id)) as { paper_id: number; direction: string; direction_label: string }[]
+      : [];
+    const paperDirections = new Map<number, { key: string; label: string }[]>();
+    for (const row of directionRows) {
+      const list = paperDirections.get(row.paper_id) || [];
+      list.push({ key: row.direction, label: row.direction_label });
+      paperDirections.set(row.paper_id, list);
+    }
+
     db.close();
     
     return NextResponse.json({
@@ -186,6 +226,7 @@ export async function GET(request: Request) {
         direction: p.direction,
         directionLabel: directionMeta[p.direction]?.label || p.direction,
         directionColor: directionMeta[p.direction]?.color || "#64748b",
+        directions: paperDirections.get(p.id) || [{ key: p.direction, label: directionMeta[p.direction]?.label || p.direction }],
         doi: p.doi,
         pdfUrl: p.pdf_url,
         sources: parseJson(p.sources, []),
@@ -197,6 +238,9 @@ export async function GET(request: Request) {
         resultsZh: p.results_zh || null,
         limitationsZh: p.limitations_zh || null,
         publicationChannel: p.publication_channel || (p.venue === "arXiv" ? "arXiv 预印本" : "同行评议渠道待核实"),
+        publicationStatus: p.publication_status || "unknown",
+        venueVerified: Boolean(p.venue_verified),
+        qualityScore: p.quality_score || 0,
         venueType: p.venue_type || "unknown",
         venueTier: p.venue_tier || 0,
         isFrontier: Boolean(p.is_frontier),

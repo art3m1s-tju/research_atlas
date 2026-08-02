@@ -1,11 +1,16 @@
 import Database from "better-sqlite3";
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { isLikelyRelevant } from "../src/lib/relevance";
 import {
   CLASSIC_SEEDS,
   metadataForPaper,
   normalizeTitle,
 } from "../src/lib/research-ranking";
+import {
+  readSyncStatus,
+  startSyncStatus,
+  writeSyncStatus,
+} from "../src/lib/sync-status";
 
 function loadLocalEnv() {
   const envPath = ".env.local";
@@ -36,6 +41,9 @@ const OPENALEX_API_KEY = process.env.OPENALEX_API_KEY;
 const SEMANTIC_SCHOLAR_API_KEY = process.env.SEMANTIC_SCHOLAR_API_KEY;
 const CROSSREF_MAILTO = process.env.CROSSREF_MAILTO || process.env.UNPAYWALL_EMAIL;
 const UNPAYWALL_EMAIL = process.env.UNPAYWALL_EMAIL;
+const REQUEST_TIMEOUT_MS = Math.max(3000, Number(process.env.SYNC_REQUEST_TIMEOUT_MS || 15000));
+const REQUEST_RETRIES = Math.max(0, Number(process.env.SYNC_REQUEST_RETRIES || 2));
+const SYNC_LOCK_PATH = process.env.SYNC_LOCK_PATH || "./data/sync.lock";
 let semanticScholarNoticeShown = false;
 
 const BUILTIN_QUERIES: Record<string, string> = {
@@ -71,6 +79,49 @@ type PaperRecord = {
 };
 
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function fetchWithRetry(url: string, init: RequestInit = {}, label: string) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= REQUEST_RETRIES; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      if (response.ok || (![408, 425, 429, 500, 502, 503, 504].includes(response.status)) || attempt === REQUEST_RETRIES) {
+        return response;
+      }
+      lastError = new Error(`${label} ${response.status}`);
+      const retryAfter = Number(response.headers.get("retry-after") || 0);
+      await sleep(Math.max(retryAfter * 1000, 500 * 2 ** attempt));
+    } catch (error) {
+      lastError = error;
+      if (attempt < REQUEST_RETRIES) await sleep(500 * 2 ** attempt);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`${label} request failed`);
+}
+
+function recordSyncError(message: string) {
+  const current = readSyncStatus();
+  const errors = [...current.errors, message].slice(-20);
+  writeSyncStatus({ errors, message: `同步遇到 ${errors.length} 个可恢复错误` });
+}
+
+function acquireSyncLock() {
+  try {
+    const descriptor = openSync(SYNC_LOCK_PATH, "wx");
+    closeSync(descriptor);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseSyncLock() {
+  try { unlinkSync(SYNC_LOCK_PATH); } catch { /* lock already removed */ }
+}
 
 function normalizeDoi(doi: string | null) {
   return doi?.replace(/^https?:\/\/doi.org\//i, "").toLowerCase().trim() || null;
@@ -118,7 +169,7 @@ async function fetchOpenAlex(query: string, directionKey: string, directionLabel
     api_key: OPENALEX_API_KEY,
   });
   try {
-    const response = await fetch(`${OPENALEX_API}?${params}`);
+    const response = await fetchWithRetry(`${OPENALEX_API}?${params}`, {}, "OpenAlex");
     if (!response.ok) throw new Error(`OpenAlex ${response.status}`);
     const data = await response.json();
     return (data.results || []).filter((paper: any) => paper.title).map((paper: any) => {
@@ -146,6 +197,7 @@ async function fetchOpenAlex(query: string, directionKey: string, directionLabel
       };
     }).filter((paper: PaperRecord) => isLikelyRelevant(paper, directionKey, directionLabel, query)).slice(0, 30);
   } catch (error) {
+    recordSyncError(`OpenAlex: ${error instanceof Error ? error.message : error}`);
     console.error(`  OpenAlex failed: ${error instanceof Error ? error.message : error}`);
     return [];
   }
@@ -160,7 +212,7 @@ async function fetchArxiv(query: string, directionKey: string, directionLabel: s
     sortOrder: "descending",
   });
   try {
-    const response = await fetch(`${ARXIV_API}?${params}`);
+    const response = await fetchWithRetry(`${ARXIV_API}?${params}`, {}, "arXiv");
     if (!response.ok) throw new Error(`arXiv ${response.status}`);
     const xml = await response.text();
     const results: PaperRecord[] = [];
@@ -195,6 +247,7 @@ async function fetchArxiv(query: string, directionKey: string, directionLabel: s
     }
     return results.filter((paper) => isLikelyRelevant(paper, directionKey, directionLabel, query)).slice(0, 30);
   } catch (error) {
+    recordSyncError(`arXiv: ${error instanceof Error ? error.message : error}`);
     console.error(`  arXiv failed: ${error instanceof Error ? error.message : error}`);
     return [];
   }
@@ -214,9 +267,9 @@ async function fetchSemanticScholar(query: string, directionKey: string, directi
     fields: "paperId,title,abstract,year,venue,citationCount,authors,externalIds,url,openAccessPdf",
   });
   try {
-    const response = await fetch(`${SEMANTIC_SCHOLAR_API}?${params}`, {
+    const response = await fetchWithRetry(`${SEMANTIC_SCHOLAR_API}?${params}`, {
       headers: { "x-api-key": SEMANTIC_SCHOLAR_API_KEY },
-    });
+    }, "Semantic Scholar");
     if (!response.ok) throw new Error(`Semantic Scholar ${response.status}`);
     const data = await response.json();
     return (data.data || []).filter((paper: any) => paper.title).map((paper: any) => {
@@ -242,6 +295,7 @@ async function fetchSemanticScholar(query: string, directionKey: string, directi
       };
     }).filter((paper: PaperRecord) => isLikelyRelevant(paper, directionKey, directionLabel, query)).slice(0, 30);
   } catch (error) {
+    recordSyncError(`Semantic Scholar: ${error instanceof Error ? error.message : error}`);
     console.error(`  Semantic Scholar failed: ${error instanceof Error ? error.message : error}`);
     return [];
   }
@@ -250,7 +304,7 @@ async function fetchSemanticScholar(query: string, directionKey: string, directi
 async function enrichCrossref(paper: PaperRecord): Promise<PaperRecord> {
   if (!paper.doi || !CROSSREF_MAILTO) return paper;
   try {
-    const response = await fetch(`${CROSSREF_API}/${encodeURIComponent(paper.doi)}?mailto=${encodeURIComponent(CROSSREF_MAILTO)}`);
+    const response = await fetchWithRetry(`${CROSSREF_API}/${encodeURIComponent(paper.doi)}?mailto=${encodeURIComponent(CROSSREF_MAILTO)}`, {}, "Crossref");
     if (!response.ok) return paper;
     const message = (await response.json()).message || {};
     return {
@@ -273,7 +327,7 @@ async function enrichCrossref(paper: PaperRecord): Promise<PaperRecord> {
 async function enrichUnpaywall(paper: PaperRecord): Promise<PaperRecord> {
   if (!paper.doi || !UNPAYWALL_EMAIL || paper.pdfUrl) return paper;
   try {
-    const response = await fetch(`${UNPAYWALL_API}/${encodeURIComponent(paper.doi)}?email=${encodeURIComponent(UNPAYWALL_EMAIL)}`);
+    const response = await fetchWithRetry(`${UNPAYWALL_API}/${encodeURIComponent(paper.doi)}?email=${encodeURIComponent(UNPAYWALL_EMAIL)}`, {}, "Unpaywall");
     if (!response.ok) return paper;
     const data = await response.json();
     const location = data.best_oa_location || data.oa_locations?.[0];
@@ -316,7 +370,19 @@ function ensureSchema(db: Database.Database) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS paper_directions (
+      paper_id INTEGER NOT NULL,
+      direction TEXT NOT NULL,
+      direction_label TEXT NOT NULL,
+      is_relevant INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (paper_id, direction)
+    );
   `);
+  const directionColumns = new Set(
+    (db.prepare("PRAGMA table_info(paper_directions)").all() as { name: string }[]).map((column) => column.name),
+  );
+  if (!directionColumns.has("is_relevant")) db.exec("ALTER TABLE paper_directions ADD COLUMN is_relevant INTEGER NOT NULL DEFAULT 1");
   const columns = new Set((db.prepare("PRAGMA table_info(papers)").all() as { name: string }[]).map((column) => column.name));
   const additions: Record<string, string> = {
     direction_label: "TEXT",
@@ -347,6 +413,9 @@ function ensureSchema(db: Database.Database) {
     discovery_reason: "TEXT NOT NULL DEFAULT '方向相关'",
     recommendation_score: "REAL NOT NULL DEFAULT 0",
     last_seen_at: "TEXT",
+    publication_status: "TEXT NOT NULL DEFAULT 'unknown'",
+    venue_verified: "INTEGER NOT NULL DEFAULT 0",
+    quality_score: "REAL NOT NULL DEFAULT 0",
   };
   for (const [column, type] of Object.entries(additions)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE papers ADD COLUMN ${column} ${type}`);
@@ -360,6 +429,12 @@ function ensureSchema(db: Database.Database) {
   for (const paper of legacySources) {
     backfillSources.run(JSON.stringify(["OpenAlex"]), JSON.stringify({ openalex: paper.openalex_id }), JSON.stringify({ OpenAlex: paper.openalex_id }), paper.id);
   }
+  db.exec(`
+    INSERT OR IGNORE INTO paper_directions (paper_id, direction, direction_label)
+    SELECT id, direction, COALESCE(direction_label, direction)
+    FROM papers
+    WHERE direction IS NOT NULL AND direction != ''
+  `);
 }
 
 function parseJson(value: string | null, fallback: any) {
@@ -427,6 +502,7 @@ function upsertPaper(
     publication_channel: values.publication_channel,
     citations: values.citations,
     citation_percentile: values.citation_percentile,
+    sources: paper.sources,
   });
   Object.assign(values, {
     venue_type: metadata.venueType,
@@ -436,103 +512,182 @@ function upsertPaper(
     discovery_reason: metadata.discoveryReason,
     recommendation_score: metadata.recommendationScore,
     last_seen_at: new Date().toISOString(),
+    publication_status: metadata.publicationStatus,
+    venue_verified: metadata.venueVerified ? 1 : 0,
+    quality_score: metadata.qualityScore,
   });
+  const changed = !existing || [
+    "title", "abstract", "year", "published_date", "venue", "citations", "citation_percentile",
+    "authors", "doi", "pdf_url", "publication_channel", "venue_type", "venue_tier", "publication_status",
+    "venue_verified", "quality_score",
+    "is_frontier", "is_classic", "discovery_reason", "recommendation_score", "sources",
+    "source_ids", "source_urls",
+  ].some((key) => String(existing?.[key] ?? "") !== String((values as Record<string, unknown>)[key] ?? ""));
   if (existing) {
-    db.prepare(`UPDATE papers SET title=@title, abstract=@abstract, year=@year, published_date=@published_date, venue=@venue, citations=@citations, citation_percentile=@citation_percentile, authors=@authors, doi=@doi, pdf_url=@pdf_url, direction=@direction, direction_label=@direction_label, publication_channel=@publication_channel, venue_type=@venue_type, venue_tier=@venue_tier, is_frontier=@is_frontier, is_classic=@is_classic, discovery_reason=@discovery_reason, recommendation_score=@recommendation_score, last_seen_at=@last_seen_at, arxiv_id=@arxiv_id, semantic_scholar_id=@semantic_scholar_id, normalized_title=@normalized_title, sources=@sources, source_ids=@source_ids, source_urls=@source_urls, is_relevant=@is_relevant, updated_at=CURRENT_TIMESTAMP WHERE id=@id`).run({ ...values, id: existing.id });
+    db.prepare(`UPDATE papers SET title=@title, abstract=@abstract, year=@year, published_date=@published_date, venue=@venue, citations=@citations, citation_percentile=@citation_percentile, authors=@authors, doi=@doi, pdf_url=@pdf_url, direction=@direction, direction_label=@direction_label, publication_channel=@publication_channel, venue_type=@venue_type, venue_tier=@venue_tier, publication_status=@publication_status, venue_verified=@venue_verified, quality_score=@quality_score, is_frontier=@is_frontier, is_classic=@is_classic, discovery_reason=@discovery_reason, recommendation_score=@recommendation_score, last_seen_at=@last_seen_at, arxiv_id=@arxiv_id, semantic_scholar_id=@semantic_scholar_id, normalized_title=@normalized_title, sources=@sources, source_ids=@source_ids, source_urls=@source_urls, is_relevant=@is_relevant, updated_at=CURRENT_TIMESTAMP WHERE id=@id`).run({ ...values, id: existing.id });
     return {
       id: existing.id as number,
       needsEmbedding: !existing.embedding || existing.embedding_model !== embeddingModel,
+      changeType: changed ? "updated" as const : "unchanged" as const,
     };
   } else {
-    db.prepare(`INSERT OR IGNORE INTO papers (openalex_id,title,abstract,year,published_date,venue,citations,citation_percentile,authors,doi,pdf_url,direction,direction_label,publication_channel,venue_type,venue_tier,is_frontier,is_classic,discovery_reason,recommendation_score,last_seen_at,arxiv_id,semantic_scholar_id,normalized_title,sources,source_ids,source_urls,is_relevant) VALUES (@openalex_id,@title,@abstract,@year,@published_date,@venue,@citations,@citation_percentile,@authors,@doi,@pdf_url,@direction,@direction_label,@publication_channel,@venue_type,@venue_tier,@is_frontier,@is_classic,@discovery_reason,@recommendation_score,@last_seen_at,@arxiv_id,@semantic_scholar_id,@normalized_title,@sources,@source_ids,@source_urls,@is_relevant)`).run(values);
+    db.prepare(`INSERT OR IGNORE INTO papers (openalex_id,title,abstract,year,published_date,venue,citations,citation_percentile,authors,doi,pdf_url,direction,direction_label,publication_channel,venue_type,venue_tier,publication_status,venue_verified,quality_score,is_frontier,is_classic,discovery_reason,recommendation_score,last_seen_at,arxiv_id,semantic_scholar_id,normalized_title,sources,source_ids,source_urls,is_relevant) VALUES (@openalex_id,@title,@abstract,@year,@published_date,@venue,@citations,@citation_percentile,@authors,@doi,@pdf_url,@direction,@direction_label,@publication_channel,@venue_type,@venue_tier,@publication_status,@venue_verified,@quality_score,@is_frontier,@is_classic,@discovery_reason,@recommendation_score,@last_seen_at,@arxiv_id,@semantic_scholar_id,@normalized_title,@sources,@source_ids,@source_urls,@is_relevant)`).run(values);
     const inserted = findExisting(db, paper);
-    return { id: inserted.id as number, needsEmbedding: true };
+    return { id: inserted.id as number, needsEmbedding: true, changeType: "inserted" as const };
   }
+}
+
+function linkPaperDirection(
+  db: Database.Database,
+  paperId: number,
+  direction: { key: string; label: string },
+) {
+  db.prepare(`
+    INSERT INTO paper_directions (paper_id, direction, direction_label, is_relevant)
+    VALUES (?, ?, ?, 1)
+    ON CONFLICT(paper_id, direction) DO UPDATE SET direction_label = excluded.direction_label, is_relevant = 1
+  `).run(paperId, direction.key, direction.label);
 }
 
 async function main() {
   const { EMBEDDING_MODEL, embedText, paperEmbeddingText } = await import("../src/lib/semantic-search");
-  const db = new Database(DB_PATH);
-  ensureSchema(db);
-  const custom = db.prepare("SELECT key, label, query FROM custom_directions").all() as { key: string; label: string; query: string }[];
-  const directions = [
-    ...Object.entries(BUILTIN_QUERIES).map(([key, query]) => ({ key, label: key, query })),
-    ...custom,
-  ];
-  let totalFetched = 0;
-  let embeddingUnavailable = false;
-
-  const saveEmbeddingIfNeeded = async (
-    paper: PaperRecord,
-    upserted: { id: number; needsEmbedding: boolean },
-  ) => {
-    if (!upserted.needsEmbedding || embeddingUnavailable) return;
-    try {
-      const embedding = await embedText(paperEmbeddingText(paper));
-      db.prepare("UPDATE papers SET embedding = ?, embedding_model = ? WHERE id = ?")
-        .run(JSON.stringify(embedding), EMBEDDING_MODEL, upserted.id);
-    } catch (error) {
-      embeddingUnavailable = true;
-      console.error(`  语义向量暂不可用，将继续保存论文数据: ${error instanceof Error ? error.message : error}`);
-    }
-  };
-
-  const builtinDirections = new Map(
-    Object.entries(BUILTIN_QUERIES).map(([key]) => [key, { key, label: key }]),
-  );
-  for (const seed of CLASSIC_SEEDS) {
-    for (const directionKey of seed.directions) {
-      const direction = builtinDirections.get(directionKey);
-      if (!direction) continue;
-      const record: PaperRecord = {
-        title: seed.title,
-        abstract: "",
-        year: seed.year,
-        publishedDate: `${seed.year}-01-01`,
-        venue: seed.venue,
-        citations: 0,
-        citationPercentile: null,
-        authors: "",
-        doi: seed.doi || null,
-        pdfUrl: seed.arxivId ? `https://arxiv.org/pdf/${seed.arxivId}.pdf` : null,
-        openalexId: null,
-        arxivId: seed.arxivId || null,
-        semanticScholarId: null,
-        sources: ["Curated classics"],
-        sourceIds: seed.arxivId ? { arxiv: seed.arxivId } : {},
-        sourceUrls: seed.arxivId ? { arXiv: `https://arxiv.org/abs/${seed.arxivId}` } : {},
-      };
-      const upserted = upsertPaper(db, record, direction, EMBEDDING_MODEL);
-      await saveEmbeddingIfNeeded(record, upserted);
-      totalFetched += 1;
-    }
+  if (!acquireSyncLock()) {
+    console.log("已有同步任务正在运行，本次跳过。");
+    return;
   }
 
-  for (const direction of directions) {
-    console.log(`\n📚 ${direction.label} (${direction.key})`);
-    const records = [
-      ...(await fetchOpenAlex(direction.query, direction.key, direction.label)),
-      ...(await fetchArxiv(direction.query, direction.key, direction.label)),
-      ...(await fetchSemanticScholar(direction.query, direction.key, direction.label)),
+  let db: Database.Database | null = null;
+  try {
+    db = new Database(DB_PATH);
+    ensureSchema(db);
+    const custom = db.prepare("SELECT key, label, query FROM custom_directions").all() as { key: string; label: string; query: string }[];
+    const directions = [
+      ...Object.entries(BUILTIN_QUERIES).map(([key, query]) => ({ key, label: key, query })),
+      ...custom,
     ];
-    const deduped = new Map<string, PaperRecord>();
-    for (const record of records) {
-      const key = normalizeDoi(record.doi) || record.arxivId || record.semanticScholarId || record.openalexId || `${normalizeTitle(record.title)}:${record.year || "unknown"}`;
-      const prior = deduped.get(key);
-      deduped.set(key, prior ? { ...prior, ...record, abstract: record.abstract.length > prior.abstract.length ? record.abstract : prior.abstract, citations: Math.max(prior.citations, record.citations), sources: [...new Set([...prior.sources, ...record.sources])], sourceIds: { ...prior.sourceIds, ...record.sourceIds }, sourceUrls: { ...prior.sourceUrls, ...record.sourceUrls } } : record);
+    startSyncStatus(directions.length);
+    const stats = { recordsFetched: 0, inserted: 0, updated: 0, unchanged: 0, duplicates: 0 };
+    let embeddingUnavailable = false;
+    const publish = (patch: Partial<typeof stats> & Partial<Parameters<typeof writeSyncStatus>[0]> = {}) => {
+      Object.assign(stats, {
+        recordsFetched: patch.recordsFetched ?? stats.recordsFetched,
+        inserted: patch.inserted ?? stats.inserted,
+        updated: patch.updated ?? stats.updated,
+        unchanged: patch.unchanged ?? stats.unchanged,
+        duplicates: patch.duplicates ?? stats.duplicates,
+      });
+      writeSyncStatus({ ...stats, ...patch });
+    };
+
+    const saveEmbeddingIfNeeded = async (
+      paper: PaperRecord,
+      upserted: { id: number; needsEmbedding: boolean },
+    ) => {
+      if (!upserted.needsEmbedding || embeddingUnavailable) return;
+      try {
+        const embedding = await embedText(paperEmbeddingText(paper));
+        db?.prepare("UPDATE papers SET embedding = ?, embedding_model = ? WHERE id = ?")
+          .run(JSON.stringify(embedding), EMBEDDING_MODEL, upserted.id);
+      } catch (error) {
+        embeddingUnavailable = true;
+        recordSyncError(`语义向量: ${error instanceof Error ? error.message : error}`);
+        console.error(`  语义向量暂不可用，将继续保存论文数据: ${error instanceof Error ? error.message : error}`);
+      }
+    };
+
+    const builtinDirections = new Map(
+      Object.entries(BUILTIN_QUERIES).map(([key]) => [key, { key, label: key }]),
+    );
+    for (const seed of CLASSIC_SEEDS) {
+      for (const directionKey of seed.directions) {
+        const direction = builtinDirections.get(directionKey);
+        if (!direction || !db) continue;
+        const record: PaperRecord = {
+          title: seed.title,
+          abstract: "",
+          year: seed.year,
+          publishedDate: `${seed.year}-01-01`,
+          venue: seed.venue,
+          citations: 0,
+          citationPercentile: null,
+          authors: "",
+          doi: seed.doi || null,
+          pdfUrl: seed.arxivId ? `https://arxiv.org/pdf/${seed.arxivId}.pdf` : null,
+          openalexId: null,
+          arxivId: seed.arxivId || null,
+          semanticScholarId: null,
+          sources: ["Curated classics"],
+          sourceIds: seed.arxivId ? { arxiv: seed.arxivId } : {},
+          sourceUrls: seed.arxivId ? { arXiv: `https://arxiv.org/abs/${seed.arxivId}` } : {},
+        };
+        const upserted = upsertPaper(db, record, direction, EMBEDDING_MODEL);
+        linkPaperDirection(db, upserted.id, direction);
+        await saveEmbeddingIfNeeded(record, upserted);
+        publish({ [upserted.changeType]: (stats[upserted.changeType] || 0) + 1 } as Partial<typeof stats>);
+      }
     }
-    for (const record of deduped.values()) {
-      const enriched = await enrichUnpaywall(await enrichCrossref(record));
-      const upserted = upsertPaper(db, enriched, direction, EMBEDDING_MODEL);
-      await saveEmbeddingIfNeeded(enriched, upserted);
-      totalFetched += 1;
+
+    for (let index = 0; index < directions.length; index += 1) {
+      const direction = directions[index];
+      console.log(`\n📚 ${direction.label} (${direction.key})`);
+      writeSyncStatus({
+        phase: "抓取论文",
+        message: `正在同步 ${direction.label}`,
+        currentDirection: direction.label,
+        completedDirections: index,
+      });
+      const records = [
+        ...(await fetchOpenAlex(direction.query, direction.key, direction.label)),
+        ...(await fetchArxiv(direction.query, direction.key, direction.label)),
+        ...(await fetchSemanticScholar(direction.query, direction.key, direction.label)),
+      ];
+      const deduped = new Map<string, PaperRecord>();
+      for (const record of records) {
+        const key = normalizeDoi(record.doi) || record.arxivId || record.semanticScholarId || record.openalexId || `${normalizeTitle(record.title)}:${record.year || "unknown"}`;
+        const prior = deduped.get(key);
+        deduped.set(key, prior ? { ...prior, ...record, abstract: record.abstract.length > prior.abstract.length ? record.abstract : prior.abstract, citations: Math.max(prior.citations, record.citations), sources: [...new Set([...prior.sources, ...record.sources])], sourceIds: { ...prior.sourceIds, ...record.sourceIds }, sourceUrls: { ...prior.sourceUrls, ...record.sourceUrls } } : record);
+      }
+      publish({ recordsFetched: stats.recordsFetched + deduped.size, duplicates: stats.duplicates + records.length - deduped.size });
+      for (const record of deduped.values()) {
+        const enriched = await enrichUnpaywall(await enrichCrossref(record));
+        if (!db) continue;
+        const upserted = upsertPaper(db, enriched, direction, EMBEDDING_MODEL);
+        linkPaperDirection(db, upserted.id, direction);
+        await saveEmbeddingIfNeeded(enriched, upserted);
+        publish({ [upserted.changeType]: (stats[upserted.changeType] || 0) + 1 } as Partial<typeof stats>);
+      }
+      console.log(`  ✓ ${deduped.size} records merged`);
+      writeSyncStatus({
+        phase: "抓取论文",
+        message: `${direction.label} 完成`,
+        currentDirection: direction.label,
+        completedDirections: index + 1,
+      });
+      await sleep(300);
     }
-    console.log(`  ✓ ${deduped.size} records merged`);
-    await sleep(1000);
+    const total = (db.prepare("SELECT COUNT(*) as count FROM papers").get() as { count: number }).count;
+    writeSyncStatus({
+      ...stats,
+      state: "completed",
+      phase: "完成",
+      message: `同步完成：新增 ${stats.inserted}，更新 ${stats.updated}，无变化 ${stats.unchanged}`,
+      currentDirection: null,
+      completedDirections: directions.length,
+      finishedAt: new Date().toISOString(),
+    });
+    console.log(`\n✅ Multi-source sync complete: ${stats.recordsFetched} records processed, ${total} papers in DB`);
+  } catch (error) {
+    writeSyncStatus({
+      state: "failed",
+      phase: "失败",
+      message: error instanceof Error ? error.message : String(error),
+      finishedAt: new Date().toISOString(),
+    });
+    throw error;
+  } finally {
+    db?.close();
+    releaseSyncLock();
   }
-  const total = (db.prepare("SELECT COUNT(*) as count FROM papers").get() as { count: number }).count;
-  console.log(`\n✅ Multi-source sync complete: ${totalFetched} records processed, ${total} papers in DB`);
-  db.close();
 }
 
 main().catch((error) => {

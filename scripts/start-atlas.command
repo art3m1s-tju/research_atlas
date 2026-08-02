@@ -70,29 +70,33 @@ if lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "正在同步最新论文..."
-npm run sync:full || {
-  echo "同步失败，仍尝试启动网页。"
-}
-
-echo "正在清理不相关论文..."
-npm run clean:relevance || {
-  echo "相关性清理失败，仍尝试启动网页。"
-}
-
-echo "正在检查语义向量..."
-npm run embeddings:backfill || {
-  echo "语义向量回填失败，仍尝试启动网页。"
-}
-
-echo "正在生成中文论文解读..."
-npm run summarize:papers || {
-  echo "中文论文解读未完成，仍尝试启动网页。"
-}
-
 echo "正在启动网页..."
 npm run dev -- --port "$PORT" &
 DEV_PID=$!
-sleep 3
+
+for attempt in {1..30}; do
+  if curl -x '' -fsS --max-time 1 "$URL" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+
+if ! curl -x '' -fsS --max-time 2 "$URL" >/dev/null 2>&1; then
+  echo "网页服务启动失败，请查看终端中的 Next.js 日志。"
+  kill "$DEV_PID" 2>/dev/null || true
+  exit 1
+fi
+
+echo "网页已启动，正在后台同步论文..."
+echo "同步进度可在网页中查看，详细日志: $ROOT_DIR/data/sync.log"
+mkdir -p "$ROOT_DIR/data"
+(
+  npm run sync:full || echo "同步失败，详见 data/sync.log"
+  npm run clean:relevance || echo "相关性清理失败，详见 data/sync.log"
+  npm run embeddings:backfill || echo "语义向量回填失败，详见 data/sync.log"
+  npm run summarize:papers || echo "中文论文解读未完成，详见 data/sync.log"
+) >> "$ROOT_DIR/data/sync.log" 2>&1 &
+SYNC_PID=$!
+
 open "$URL"
 wait "$DEV_PID"

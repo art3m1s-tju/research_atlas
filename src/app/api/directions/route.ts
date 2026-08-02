@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import Database from "better-sqlite3";
-import { exec } from "child_process";
+import { spawn } from "child_process";
+import { closeSync, mkdirSync, openSync } from "fs";
 import path from "path";
+import { readSyncStatus } from "@/lib/sync-status";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 const OPENALEX_API = "https://api.openalex.org/works";
@@ -31,6 +33,25 @@ function openDB() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
+    ;
+    CREATE TABLE IF NOT EXISTS paper_directions (
+      paper_id INTEGER NOT NULL,
+      direction TEXT NOT NULL,
+      direction_label TEXT NOT NULL,
+      is_relevant INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (paper_id, direction)
+    )
+  `);
+  const directionColumns = new Set(
+    (db.prepare("PRAGMA table_info(paper_directions)").all() as { name: string }[]).map((column) => column.name),
+  );
+  if (!directionColumns.has("is_relevant")) db.exec("ALTER TABLE paper_directions ADD COLUMN is_relevant INTEGER NOT NULL DEFAULT 1");
+  db.exec(`
+    INSERT OR IGNORE INTO paper_directions (paper_id, direction, direction_label)
+    SELECT id, direction, COALESCE(direction_label, direction)
+    FROM papers
+    WHERE direction IS NOT NULL AND direction != ''
   `);
   return db;
 }
@@ -108,6 +129,14 @@ function ensurePaperColumns(db: Database.Database) {
     direction_label: "TEXT",
     publication_channel: "TEXT",
     is_relevant: "INTEGER NOT NULL DEFAULT 1",
+    published_date: "TEXT",
+    citation_percentile: "REAL",
+    venue_type: "TEXT NOT NULL DEFAULT 'unknown'",
+    venue_tier: "INTEGER NOT NULL DEFAULT 0",
+    is_frontier: "INTEGER NOT NULL DEFAULT 0",
+    is_classic: "INTEGER NOT NULL DEFAULT 0",
+    discovery_reason: "TEXT NOT NULL DEFAULT '方向相关'",
+    recommendation_score: "REAL NOT NULL DEFAULT 0",
   };
   for (const [column, type] of Object.entries(optionalColumns)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE papers ADD COLUMN ${column} ${type}`);
@@ -119,7 +148,7 @@ export async function GET() {
   try {
     ensurePaperColumns(db);
     const counts = db.prepare(
-      "SELECT direction, COUNT(*) as count FROM papers WHERE is_relevant IS NULL OR is_relevant != 0 GROUP BY direction"
+      "SELECT pd.direction, COUNT(DISTINCT pd.paper_id) as count FROM paper_directions pd JOIN papers p ON p.id = pd.paper_id WHERE (p.is_relevant IS NULL OR p.is_relevant != 0) AND (pd.is_relevant IS NULL OR pd.is_relevant != 0) GROUP BY pd.direction"
     ).all() as { direction: string; count: number }[];
     const databaseStats = db.prepare(
       "SELECT COUNT(*) as total, SUM(CASE WHEN is_relevant = 0 THEN 1 ELSE 0 END) as hidden FROM papers"
@@ -128,7 +157,9 @@ export async function GET() {
       "SELECT key, label, color FROM custom_directions ORDER BY created_at"
     ).all() as { key: string; label: string; color: string }[];
     const countMap = Object.fromEntries(counts.map((item) => [item.direction, item.count]));
-    const total = counts.reduce((sum, item) => sum + item.count, 0);
+    const total = (db.prepare(
+      "SELECT COUNT(*) as count FROM papers WHERE is_relevant IS NULL OR is_relevant != 0"
+    ).get() as { count: number }).count;
 
     return NextResponse.json({
       databaseStats: {
@@ -182,25 +213,27 @@ export async function POST(request: Request) {
       "INSERT INTO custom_directions (key, label, query, color) VALUES (?, ?, ?, ?)"
     ).run(key, label, query, color);
 
-    let syncOutput = "";
-    try {
-      syncOutput = await new Promise<string>((resolve, reject) => {
-        const scriptPath = path.join(process.cwd(), "scripts", "sync-multi-source.ts");
-        exec(`npx tsx ${scriptPath}`, { cwd: process.cwd(), timeout: 120000 }, (error, stdout, stderr) => {
-          if (error) reject(new Error(stderr || error.message));
-          else resolve(stdout);
-        });
+    const currentSync = readSyncStatus();
+    if (currentSync.state !== "running") {
+      const logDirectory = path.join(process.cwd(), "data");
+      mkdirSync(logDirectory, { recursive: true });
+      const logDescriptor = openSync(path.join(logDirectory, "sync.log"), "a");
+      const command = process.platform === "win32" ? "npx.cmd" : "npx";
+      const child = spawn(command, ["tsx", path.join(process.cwd(), "scripts", "sync-multi-source.ts")], {
+        cwd: process.cwd(),
+        detached: true,
+        stdio: ["ignore", logDescriptor, logDescriptor],
+        env: process.env,
       });
-    } catch (error) {
-      console.error("Multi-source direction sync failed:", error);
+      closeSync(logDescriptor);
+      child.unref();
     }
-    const papersAdded = (db.prepare("SELECT COUNT(*) as count FROM papers WHERE direction = ?").get(key) as { count: number }).count;
+    const papersAdded = (db.prepare("SELECT COUNT(DISTINCT paper_id) as count FROM paper_directions WHERE direction = ?").get(key) as { count: number }).count;
 
     return NextResponse.json({
       direction: { key, label, color, count: papersAdded, custom: true },
       papersAdded,
-      message: papersAdded ? "方向已创建并完成多源首次同步" : "方向已创建，暂未获取到论文，可稍后重试",
-      syncOutput: syncOutput.slice(-2000),
+      message: currentSync.state === "running" ? "方向已创建，将在当前同步完成后更新" : "方向已创建，论文正在后台同步",
     }, { status: 201 });
   } finally {
     db.close();

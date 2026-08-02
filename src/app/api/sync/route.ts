@@ -1,26 +1,36 @@
 import { NextResponse } from "next/server";
-import { exec } from "child_process";
+import { spawn } from "child_process";
+import { closeSync, existsSync, mkdirSync, openSync } from "fs";
 import path from "path";
+import { readSyncStatus } from "@/lib/sync-status";
 
 export async function POST() {
-  return new Promise<NextResponse>((resolve) => {
-    const scriptPath = path.join(process.cwd(), "scripts", "sync-multi-source.ts");
-    exec(`npx tsx ${scriptPath}`, { cwd: process.cwd() }, (error, stdout, stderr) => {
-      if (error) {
-        console.error("Sync error:", error);
-        resolve(NextResponse.json({ 
-          success: false, 
-          error: stderr || error.message 
-        }, { status: 500 }));
-        return;
-      }
-      
-      console.log("Sync output:", stdout);
-      resolve(NextResponse.json({ 
-        success: true, 
-        message: "同步完成",
-        output: stdout 
-      }));
-    });
+  const current = readSyncStatus();
+  if (current.state === "running") {
+    return NextResponse.json({ success: true, started: false, message: "已有同步任务正在运行", status: current }, { status: 202 });
+  }
+
+  const root = process.cwd();
+  const logDirectory = path.join(root, "data");
+  const logPath = path.join(logDirectory, "sync.log");
+  mkdirSync(logDirectory, { recursive: true });
+  const logDescriptor = openSync(logPath, "a");
+  const scriptPath = path.join(root, "scripts", "sync-multi-source.ts");
+  const command = process.platform === "win32" ? "npx.cmd" : "npx";
+  const child = spawn(command, ["tsx", scriptPath], {
+    cwd: root,
+    detached: true,
+    stdio: ["ignore", logDescriptor, logDescriptor],
+    env: process.env,
   });
+  closeSync(logDescriptor);
+  child.unref();
+
+  return NextResponse.json({
+    success: true,
+    started: true,
+    message: "同步已在后台开始",
+    logPath,
+    status: existsSync(path.join(root, "data", "sync-status.json")) ? readSyncStatus() : null,
+  }, { status: 202 });
 }

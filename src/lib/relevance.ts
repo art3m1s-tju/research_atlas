@@ -30,6 +30,11 @@ const AUTONOMY_PATTERNS = [
 
 const ROBOTICS_PATTERNS = [/robotics?/, /embodied ai/, /quadrotor/, /drone/, /\buav\b/];
 const RACING_PATTERNS = [/autonomous racing/, /racing car/, /driverless/, /formula student/, /vehicle dynamics/, /high[- ]speed autonomous/, /racing line/];
+const OFF_DOMAIN_PATTERNS = [
+  /\b(cancer|tumou?r|patient|clinical trial|pharmacy|drug discovery|protein|genome|medical imaging|disease diagnosis)\b/,
+  /\b(quantum computing|quantum chemistry|climate change|crop yield|agriculture|financial market|stock prediction)\b/,
+  /肺癌|肿瘤|患者|临床试验|药物发现|蛋白质|基因组|医学影像|疾病诊断|量子计算|气候变化|农业|股票预测/,
+];
 
 function containsTerm(text: string, term: string) {
   return text.includes(term);
@@ -42,6 +47,9 @@ export function isLikelyRelevant(
   directionQuery?: string,
 ) {
   const text = [paper.title, paper.abstract, paper.venue].filter(Boolean).join(" ").toLowerCase();
+  const hasDrivingAnchor = AUTONOMY_PATTERNS.some((pattern) => pattern.test(text)) ||
+    /autonomous driving|self[- ]driving|driverless|road vehicle|vehicle control|驾驶|自动驾驶|无人车/.test(text);
+  if (OFF_DOMAIN_PATTERNS.some((pattern) => pattern.test(text)) && !hasDrivingAnchor) return false;
   const terms = BUILTIN_DOMAIN_TERMS[directionKey];
   if (terms) {
     if (terms.some((term) => containsTerm(text, term))) return true;

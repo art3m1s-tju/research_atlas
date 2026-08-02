@@ -11,6 +11,7 @@ interface Paper {
   pdfUrl: string | null;
   directionLabel?: string;
   directionColor?: string;
+  directions?: { key: string; label: string }[];
   sources?: string[];
   sourceUrls?: Record<string, string>;
   citationPercentile?: number | null;
@@ -26,6 +27,9 @@ interface Paper {
   resultsZh?: string | null;
   limitationsZh?: string | null;
   publicationChannel?: string;
+  publicationStatus?: string;
+  venueVerified?: boolean;
+  qualityScore?: number;
 }
 
 const DIRECTION_LABELS: Record<string, { label: string; color: string }> = {
@@ -83,6 +87,11 @@ export default function PaperCard({ paper }: { paper: Paper }) {
             同年份高影响
           </span>
         )}
+        {paper.directions?.slice(1, 3).map((direction) => (
+          <span key={direction.key} className="px-2 py-1 rounded-full bg-slate-50 text-slate-600 text-xs">
+            {direction.label}
+          </span>
+        ))}
       </div>
 
       <h3 className="text-lg font-bold text-gray-900 mb-2 line-clamp-2">
@@ -101,6 +110,22 @@ export default function PaperCard({ paper }: { paper: Paper }) {
             <span>{paper.publicationChannel}</span>
           </>
         )}
+      </div>
+
+      <div className="mb-3 flex flex-wrap gap-1.5 text-xs">
+        {paper.publicationStatus === "published" && (
+          <span className="rounded bg-emerald-50 px-2 py-0.5 text-emerald-700">正式发表</span>
+        )}
+        {paper.publicationStatus === "preprint" && (
+          <span className="rounded bg-slate-100 px-2 py-0.5 text-slate-600">预印本</span>
+        )}
+        {paper.publicationStatus === "workshop" && (
+          <span className="rounded bg-violet-50 px-2 py-0.5 text-violet-700">Workshop</span>
+        )}
+        {paper.publicationStatus === "unknown" && (
+          <span className="rounded bg-gray-100 px-2 py-0.5 text-gray-500">发表渠道待核实</span>
+        )}
+        {paper.venueVerified && <span className="rounded bg-blue-50 px-2 py-0.5 text-blue-700">渠道已记录</span>}
       </div>
 
       {paper.discoveryReason && (
