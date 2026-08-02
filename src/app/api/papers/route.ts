@@ -28,6 +28,14 @@ function ensureEmbeddingSchema(db: Database.Database) {
   );
   if (!columns.has("embedding")) db.exec("ALTER TABLE papers ADD COLUMN embedding TEXT");
   if (!columns.has("embedding_model")) db.exec("ALTER TABLE papers ADD COLUMN embedding_model TEXT");
+  if (!columns.has("summary_zh")) db.exec("ALTER TABLE papers ADD COLUMN summary_zh TEXT");
+  if (!columns.has("innovations_zh")) db.exec("ALTER TABLE papers ADD COLUMN innovations_zh TEXT NOT NULL DEFAULT '[]'");
+  if (!columns.has("method_zh")) db.exec("ALTER TABLE papers ADD COLUMN method_zh TEXT");
+  if (!columns.has("results_zh")) db.exec("ALTER TABLE papers ADD COLUMN results_zh TEXT");
+  if (!columns.has("limitations_zh")) db.exec("ALTER TABLE papers ADD COLUMN limitations_zh TEXT");
+  if (!columns.has("summary_model")) db.exec("ALTER TABLE papers ADD COLUMN summary_model TEXT");
+  if (!columns.has("summary_source_hash")) db.exec("ALTER TABLE papers ADD COLUMN summary_source_hash TEXT");
+  if (!columns.has("summary_updated_at")) db.exec("ALTER TABLE papers ADD COLUMN summary_updated_at TEXT");
 }
 
 export async function GET(request: Request) {
@@ -122,6 +130,12 @@ export async function GET(request: Request) {
         sources: parseJson(p.sources, []),
         sourceUrls: parseJson(p.source_urls, {}),
         matchScore: p.matchScore,
+        summaryZh: p.summary_zh || null,
+        innovationsZh: parseJson(p.innovations_zh, []),
+        methodZh: p.method_zh || null,
+        resultsZh: p.results_zh || null,
+        limitationsZh: p.limitations_zh || null,
+        publicationChannel: p.publication_channel || (p.venue === "arXiv" ? "arXiv 预印本" : "同行评议渠道待核实"),
       })),
       searchMode,
     });

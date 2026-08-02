@@ -9,6 +9,7 @@
 - 支持新增自定义方向，例如“自动驾驶幻觉控制”
 - 保留 DOI、PDF、数据源链接，并按 DOI、arXiv ID、Semantic Scholar ID 和标题年份去重
 - 论文卡片显示来源和引用量
+- 可选生成中文速览、核心创新点、方法和关键结果
 - 支持本地 SQLite 数据库，不依赖云端数据库
 
 ## 快速开始
@@ -58,6 +59,7 @@ TRANSFORMERS_CACHE=./.cache/transformers
 - Crossref 用于 DOI、期刊/会议元数据校正。
 - Unpaywall 用于寻找合法开放获取 PDF。
 - `.env.local` 和 `data/*.db` 已被 `.gitignore` 排除，不应提交密钥或本地数据库。
+- DeepSeek 配置后，`summarize:papers` 会用 `deepseek-v4-flash` 批量生成中文论文解读；默认并发 8，可通过 `SUMMARY_CONCURRENCY` 调整。
 
 ## 同步论文
 
@@ -72,6 +74,14 @@ npm run sync:full
 ```bash
 npm run embeddings:backfill
 ```
+
+生成中文论文解读：
+
+```bash
+npm run summarize:papers
+```
+
+该任务只处理尚未生成或原始摘要发生变化的论文，成功结果会写入 SQLite；没有 `DEEPSEEK_API_KEY` 时会安全跳过，不影响同步和搜索。
 
 网页中的“同步最新论文”按钮和每日任务也调用同一个多源同步器：
 

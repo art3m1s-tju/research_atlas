@@ -316,6 +316,14 @@ function ensureSchema(db: Database.Database) {
     source_urls: "TEXT NOT NULL DEFAULT '{}'",
     embedding: "TEXT",
     embedding_model: "TEXT",
+    summary_zh: "TEXT",
+    innovations_zh: "TEXT NOT NULL DEFAULT '[]'",
+    method_zh: "TEXT",
+    results_zh: "TEXT",
+    limitations_zh: "TEXT",
+    summary_model: "TEXT",
+    summary_source_hash: "TEXT",
+    summary_updated_at: "TEXT",
   };
   for (const [column, type] of Object.entries(additions)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE papers ADD COLUMN ${column} ${type}`);

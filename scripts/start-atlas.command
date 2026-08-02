@@ -52,8 +52,10 @@ load_keychain_secret() {
 # Persist existing local keys into Keychain, then use Keychain as a fallback.
 save_env_secret_to_keychain "OPENALEX_API_KEY" "ai-research-atlas.openalex"
 save_env_secret_to_keychain "SEMANTIC_SCHOLAR_API_KEY" "ai-research-atlas.semantic-scholar"
+save_env_secret_to_keychain "DEEPSEEK_API_KEY" "ai-research-atlas.deepseek"
 load_keychain_secret "OPENALEX_API_KEY" "ai-research-atlas.openalex"
 load_keychain_secret "SEMANTIC_SCHOLAR_API_KEY" "ai-research-atlas.semantic-scholar"
+load_keychain_secret "DEEPSEEK_API_KEY" "ai-research-atlas.deepseek"
 
 if curl -x '' -fsS --max-time 2 "$URL" >/dev/null 2>&1; then
   echo "服务器已经在运行，正在打开网页..."
@@ -76,6 +78,11 @@ npm run sync:full || {
 echo "正在检查语义向量..."
 npm run embeddings:backfill || {
   echo "语义向量回填失败，仍尝试启动网页。"
+}
+
+echo "正在生成中文论文解读..."
+npm run summarize:papers || {
+  echo "中文论文解读未完成，仍尝试启动网页。"
 }
 
 echo "正在启动网页..."

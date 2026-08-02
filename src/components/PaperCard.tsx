@@ -13,6 +13,12 @@ interface Paper {
   directionColor?: string;
   sources?: string[];
   sourceUrls?: Record<string, string>;
+  summaryZh?: string | null;
+  innovationsZh?: string[];
+  methodZh?: string | null;
+  resultsZh?: string | null;
+  limitationsZh?: string | null;
+  publicationChannel?: string;
 }
 
 const DIRECTION_LABELS: Record<string, { label: string; color: string }> = {
@@ -68,6 +74,12 @@ export default function PaperCard({ paper }: { paper: Paper }) {
         <span>{paper.venue}</span>
         {paper.venue && <span>•</span>}
         <span>{paper.year}</span>
+        {paper.publicationChannel && (
+          <>
+            <span>•</span>
+            <span>{paper.publicationChannel}</span>
+          </>
+        )}
       </div>
 
       {paper.sources && paper.sources.length > 0 && (
@@ -80,10 +92,27 @@ export default function PaperCard({ paper }: { paper: Paper }) {
         </div>
       )}
 
-      {paper.abstract && (
+      {paper.summaryZh ? (
+        <div className="mb-4 rounded-lg bg-amber-50 px-4 py-3">
+          <div className="mb-1 text-xs font-semibold tracking-wide text-amber-800">中文速览</div>
+          <p className="text-sm leading-relaxed text-gray-800">{paper.summaryZh}</p>
+        </div>
+      ) : paper.abstract ? (
         <p className="text-sm text-gray-700 mb-4 line-clamp-3 leading-relaxed">
           {paper.abstract}
         </p>
+      ) : null}
+
+      {paper.innovationsZh && paper.innovationsZh.length > 0 &&
+        !paper.innovationsZh.every((item) => item === "摘要未说明") && (
+        <div className="mb-4">
+          <div className="mb-1 text-xs font-semibold tracking-wide text-slate-600">核心创新</div>
+          <ul className="list-disc space-y-1 pl-5 text-sm leading-relaxed text-gray-700">
+            {paper.innovationsZh.slice(0, 3).map((innovation) => (
+              <li key={innovation}>{innovation}</li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <div className="flex items-center justify-between pt-4 border-t border-gray-100">
