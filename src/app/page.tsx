@@ -38,6 +38,7 @@ interface Paper {
   venueVerified?: boolean;
   venueConfidence?: number;
   qualityScore?: number;
+  qualityLabel?: string;
 }
 
 interface Direction {

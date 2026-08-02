@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
 import { cosineSimilarity, lexicalScore, parseEmbedding } from "@/lib/semantic-search";
-import { BUILTIN_DIRECTION_LABELS, metadataForPaper } from "@/lib/research-ranking";
+import { BUILTIN_DIRECTION_LABELS, metadataForPaper, qualityLabel } from "@/lib/research-ranking";
 import { ensureUserStateSchema } from "@/lib/user-state";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
@@ -260,6 +260,7 @@ export async function GET(request: Request) {
         venueVerified: Boolean(p.venue_verified),
         venueConfidence: p.venue_confidence || 0,
         qualityScore: p.quality_score || 0,
+        qualityLabel: qualityLabel(p),
         venueType: p.venue_type || "unknown",
         venueTier: p.venue_tier || 0,
         isFrontier: Boolean(p.is_frontier),

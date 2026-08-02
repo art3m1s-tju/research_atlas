@@ -35,6 +35,8 @@ interface DailyPaper {
   venueVerified?: boolean;
   venueConfidence?: number;
   qualityScore?: number;
+  qualityLabel?: string;
+  directionRelevance?: number | null;
   userState?: { isRead?: boolean; isSaved?: boolean; isHidden?: boolean; note?: string };
 }
 
@@ -45,22 +47,34 @@ interface DailySection {
   papers: DailyPaper[];
 }
 
+interface RecommendationStats {
+  saved: number;
+  read: number;
+  hidden: number;
+  interacted: number;
+  recommendationsLast7Days: number;
+}
+
 export default function DailyRecommendations() {
   const [sections, setSections] = useState<DailySection[]>([]);
   const [message, setMessage] = useState("");
   const [hasPreferenceData, setHasPreferenceData] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [filterWindow, setFilterWindow] = useState("all");
+  const [stats, setStats] = useState<RecommendationStats | null>(null);
 
   useEffect(() => {
     let active = true;
     async function loadRecommendations() {
+      setLoading(true);
       try {
-        const response = await fetch("/api/daily-recommendations?limit=2", { cache: "no-store" });
+        const response = await fetch(`/api/daily-recommendations?limit=2&window=${filterWindow}`, { cache: "no-store" });
         const data = await response.json();
         if (!active) return;
         setSections(data.directions || []);
         setMessage(data.message || "");
         setHasPreferenceData(Boolean(data.hasPreferenceData));
+        setStats(data.stats || null);
       } catch {
         if (active) setMessage("每日推荐暂时不可用，请稍后重试。");
       } finally {
@@ -76,7 +90,7 @@ export default function DailyRecommendations() {
       window.removeEventListener("paper-feedback-updated", refresh);
       window.removeEventListener("direction-preferences-updated", refresh);
     };
-  }, []);
+  }, [filterWindow]);
 
   return (
     <section className="mb-8 rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 via-white to-amber-50 p-5">
@@ -89,6 +103,31 @@ export default function DailyRecommendations() {
           <p className="mt-1 text-sm text-gray-600">每个感兴趣方向精选 1–2 篇，优先近期前沿与高质量论文。</p>
         </div>
         <span className="rounded-full bg-white/80 px-3 py-1 text-xs text-gray-500">按行为更新</span>
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-gray-500">论文范围：</span>
+        {[
+          ["all", "综合"],
+          ["7d", "近 7 天"],
+          ["30d", "近 30 天"],
+          ["1y", "近 1 年"],
+          ["classic", "经典补充"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setFilterWindow(key)}
+            className={`rounded-full border px-2.5 py-1 text-xs transition-colors ${filterWindow === key ? "border-blue-600 bg-blue-600 text-white" : "border-gray-200 bg-white text-gray-600 hover:border-blue-300"}`}
+          >
+            {label}
+          </button>
+        ))}
+        {stats && (
+          <span className="ml-auto text-xs text-gray-500">
+            近 30 天：收藏 {stats.saved} · 已读 {stats.read} · 隐藏 {stats.hidden} · 近 7 天推荐 {stats.recommendationsLast7Days}
+          </span>
+        )}
       </div>
 
       {loading ? (

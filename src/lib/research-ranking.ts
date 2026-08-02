@@ -227,6 +227,20 @@ export function discoveryReason(paper: {
   return (paper.venue_tier || 0) >= 3 ? "高质量基础" : "方向相关";
 }
 
+export function qualityLabel(paper: {
+  is_classic?: number | boolean | null;
+  venue_tier?: number | null;
+  publication_status?: string | null;
+  venue_verified?: number | boolean | null;
+}) {
+  if (paper.is_classic) return "经典必读";
+  if ((paper.venue_tier || 0) >= 3 && paper.publication_status === "published") return "顶会/顶刊";
+  if ((paper.venue_tier || 0) >= 2 && paper.publication_status === "published") return "高质量发表";
+  if (paper.publication_status === "preprint" && (paper.venue_verified || (paper.venue_tier || 0) >= 1)) return "高质量预印本";
+  if (paper.publication_status === "workshop") return "Workshop";
+  return "方向相关";
+}
+
 export function metadataForPaper(paper: {
   title: string;
   year?: number | null;

@@ -40,6 +40,30 @@ function containsTerm(text: string, term: string) {
   return text.includes(term);
 }
 
+export function directionRelevanceScore(
+  paper: { title: string; abstract?: string | null; venue?: string | null },
+  directionKey: string,
+  directionLabel?: string,
+  directionQuery?: string,
+) {
+  const title = String(paper.title || "").toLowerCase();
+  const text = [paper.title, paper.abstract, paper.venue].filter(Boolean).join(" ").toLowerCase();
+  const terms = BUILTIN_DOMAIN_TERMS[directionKey] || `${directionLabel || ""} ${directionQuery || ""}`
+    .toLowerCase()
+    .split(/[^a-z0-9一-鿿]+/)
+    .filter((term) => term.length >= 2);
+  const titleHits = terms.filter((term) => title.includes(term)).length;
+  const bodyHits = terms.filter((term) => text.includes(term)).length;
+  const drivingAnchor = AUTONOMY_PATTERNS.some((pattern) => pattern.test(text)) ||
+    /autonomous driving|self[- ]driving|driverless|vehicle control|驾驶|自动驾驶|无人车/.test(text);
+  const offDomain = OFF_DOMAIN_PATTERNS.some((pattern) => pattern.test(text));
+  const termCoverage = terms.length ? Math.min(1, bodyHits / Math.max(1, Math.min(terms.length, 4))) : 0.5;
+  const titleSignal = terms.length ? Math.min(1, titleHits / Math.max(1, Math.min(terms.length, 2))) : 0.5;
+  let score = 0.35 * termCoverage + 0.25 * titleSignal + (drivingAnchor ? 0.3 : 0.05);
+  if (offDomain && !drivingAnchor) score -= 0.55;
+  return Math.max(0, Math.min(1, score));
+}
+
 export function isLikelyRelevant(
   paper: { title: string; abstract?: string | null; venue?: string | null },
   directionKey: string,

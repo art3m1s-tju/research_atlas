@@ -31,6 +31,19 @@ function openDB() {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS daily_recommendation_snapshot (
+      recommendation_date TEXT NOT NULL,
+      filter_window TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      paper_id INTEGER NOT NULL,
+      rank INTEGER NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'personal',
+      score REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (recommendation_date, filter_window, direction, rank)
+    )
+  `);
   return db;
 }
 
@@ -91,6 +104,7 @@ export async function POST(request: NextRequest) {
         is_active = excluded.is_active,
         updated_at = CURRENT_TIMESTAMP
     `).run(direction, weight, isActive ? 1 : 0);
+    db.exec("DELETE FROM daily_recommendation_snapshot WHERE recommendation_date = date('now')");
 
     return NextResponse.json({ direction, weight, isActive });
   } finally {

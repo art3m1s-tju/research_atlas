@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
-import { BUILTIN_DIRECTION_LABELS } from "@/lib/research-ranking";
+import { BUILTIN_DIRECTION_LABELS, qualityLabel } from "@/lib/research-ranking";
 import { ensureDirectionPreferenceSchema } from "@/lib/direction-preferences";
 import { ensureUserStateSchema } from "@/lib/user-state";
+import { directionRelevanceScore } from "@/lib/relevance";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 
@@ -45,6 +46,19 @@ function ensureSchema(db: Database.Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_daily_recommendation_history_date
       ON daily_recommendation_history(shown_on);
+    CREATE TABLE IF NOT EXISTS daily_recommendation_snapshot (
+      recommendation_date TEXT NOT NULL,
+      filter_window TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      paper_id INTEGER NOT NULL,
+      rank INTEGER NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'personal',
+      score REAL NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (recommendation_date, filter_window, direction, rank)
+    );
+    CREATE INDEX IF NOT EXISTS idx_daily_recommendation_snapshot_date
+      ON daily_recommendation_snapshot(recommendation_date, filter_window);
   `);
   const columns = new Set(
     (db.prepare("PRAGMA table_info(paper_directions)").all() as { name: string }[]).map((column) => column.name),
@@ -75,6 +89,26 @@ function recencyScore(year: number | null, publishedDate: string | null) {
   if (!date) return 0;
   const ageMonths = Math.max(0, (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24 * 30.4));
   return Math.exp(-ageMonths / 30);
+}
+
+function parseEventDate(value: string) {
+  const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
+function decayedEventWeight(event: string, createdAt: string) {
+  const ageDays = Math.max(0, (Date.now() - parseEventDate(createdAt).getTime()) / (1000 * 60 * 60 * 24));
+  const decay = Math.exp(-ageDays / 90);
+  const base = event === "save" ? 3 : event === "read" ? 1 : event === "unsave" ? -3 : event === "unread" ? -1 : event === "hide" ? -4 : event === "unhide" ? 4 : 0;
+  return base * decay;
+}
+
+function windowStart(filterWindow: string) {
+  if (filterWindow === "7d") return "date('now', '-7 day')";
+  if (filterWindow === "30d") return "date('now', '-30 day')";
+  if (filterWindow === "1y") return "date('now', '-1 year')";
+  return null;
 }
 
 function recommendationReason(paper: any, prefix = "") {
@@ -115,6 +149,8 @@ function mapPaper(paper: any, direction: { key: string; label: string }, score: 
     qualityScore: paper.quality_score || 0,
     venueType: paper.venue_type || "unknown",
     venueTier: paper.venue_tier || 0,
+    qualityLabel: qualityLabel(paper),
+    directionRelevance: paper.direction_relevance || null,
     isFrontier: Boolean(paper.is_frontier),
     isClassic: Boolean(paper.is_classic),
     discoveryReason: recommendationReason(paper, reasonPrefix),
@@ -133,6 +169,9 @@ export async function GET(request: NextRequest) {
   const requestedLimit = Number(searchParams.get("limit") || 2);
   const perDirection = Math.min(Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 2, 1), 2);
   const requestedDirections = (searchParams.get("directions") || "").split(",").map((value) => value.trim()).filter(Boolean);
+  const filterWindow = ["all", "7d", "30d", "1y", "classic"].includes(searchParams.get("window") || "")
+    ? searchParams.get("window") || "all"
+    : "all";
   const db = new Database(DB_PATH);
 
   try {
@@ -147,24 +186,42 @@ export async function GET(request: NextRequest) {
     const activeConfiguredRows = configuredRows.filter((row) => row.is_active !== 0);
     const disabledDirections = new Set(configuredRows.filter((row) => row.is_active === 0).map((row) => row.direction));
 
-    const behaviorRows = db.prepare(`
-      SELECT pd.direction,
-        SUM(CASE
-          WHEN e.event = 'save' THEN 3
-          WHEN e.event = 'read' THEN 1
-          WHEN e.event = 'unsave' THEN -3
-          WHEN e.event = 'unread' THEN -1
-          WHEN e.event = 'hide' THEN -4
-          WHEN e.event = 'unhide' THEN 4
-          ELSE 0
-        END) AS preference_score,
-        COUNT(DISTINCT e.paper_id) AS papers_interacted
+    const eventRows = db.prepare(`
+      SELECT pd.direction, e.event, e.created_at, e.paper_id
       FROM paper_user_events e
       JOIN paper_directions pd ON pd.paper_id = e.paper_id AND pd.is_relevant != 0
-      GROUP BY pd.direction
-      HAVING preference_score > 0
-      ORDER BY preference_score DESC, papers_interacted DESC
-    `).all() as { direction: string; preference_score: number; papers_interacted: number }[];
+    `).all() as { direction: string; event: string; created_at: string; paper_id: number }[];
+    const behaviorAccumulator = new Map<string, { preference_score: number; papers: Set<number> }>();
+    for (const event of eventRows) {
+      const current = behaviorAccumulator.get(event.direction) || { preference_score: 0, papers: new Set<number>() };
+      current.preference_score += decayedEventWeight(event.event, event.created_at);
+      current.papers.add(event.paper_id);
+      behaviorAccumulator.set(event.direction, current);
+    }
+    const behaviorRows = [...behaviorAccumulator.entries()]
+      .map(([direction, value]) => ({ direction, preference_score: value.preference_score, papers_interacted: value.papers.size }))
+      .filter((row) => row.preference_score > 0)
+      .sort((left, right) => right.preference_score - left.preference_score || right.papers_interacted - left.papers_interacted);
+
+    const feedbackCounts = db.prepare(`
+      SELECT event, COUNT(*) AS count
+      FROM paper_user_events
+      WHERE created_at >= datetime('now', '-30 day')
+      GROUP BY event
+    `).all() as { event: string; count: number }[];
+    const feedbackMap = new Map(feedbackCounts.map((row) => [row.event, row.count]));
+    const recommendationsLast7Days = (db.prepare(`
+      SELECT COUNT(DISTINCT paper_id) AS count
+      FROM daily_recommendation_history
+      WHERE shown_on >= date('now', '-7 day')
+    `).get() as { count: number }).count;
+    const stats = {
+      saved: feedbackMap.get("save") || 0,
+      read: feedbackMap.get("read") || 0,
+      hidden: feedbackMap.get("hide") || 0,
+      interacted: eventRows.filter((event) => parseEventDate(event.created_at).getTime() >= Date.now() - 30 * 24 * 60 * 60 * 1000).length,
+      recommendationsLast7Days,
+    };
 
     const behaviorMap = new Map(behaviorRows.map((row) => [row.direction, row]));
     const directionKeys = requestedDirections.length
@@ -187,10 +244,53 @@ export async function GET(request: NextRequest) {
           : "还没有足够的兴趣数据。先收藏或标记几篇论文，每个方向就会自动生成每日精选。",
         directions: [],
         total: 0,
+        filterWindow,
+        stats,
+      });
+    }
+
+    const snapshotRows = db.prepare(`
+      SELECT s.direction, s.rank, s.kind, s.score, s.created_at,
+        p.*, pd.direction_label, us.is_read, us.is_saved, us.is_hidden, us.note
+      FROM daily_recommendation_snapshot s
+      JOIN papers p ON p.id = s.paper_id
+      JOIN paper_directions pd ON pd.paper_id = p.id AND pd.direction = s.direction AND pd.is_relevant != 0
+      LEFT JOIN paper_user_state us ON us.paper_id = p.id
+      WHERE s.recommendation_date = date('now')
+        AND s.filter_window = ?
+        AND (p.is_relevant IS NULL OR p.is_relevant != 0)
+        AND (us.is_hidden IS NULL OR us.is_hidden = 0)
+      ORDER BY s.kind, s.direction, s.rank
+    `).all(filterWindow) as any[];
+    if (snapshotRows.length) {
+      const snapshotMap = new Map<string, any>();
+      for (const row of snapshotRows) {
+        const directionLabel = row.direction_label || BUILTIN_DIRECTION_LABELS[row.direction] || row.direction;
+        const sectionKey = row.kind === "exploration" ? "exploration" : row.direction;
+        const section = snapshotMap.get(sectionKey) || {
+          key: sectionKey,
+          label: row.kind === "exploration" ? "探索邻域" : directionLabel,
+          kind: row.kind,
+          papers: [],
+        };
+        section.papers.push(mapPaper(row, { key: row.direction, label: directionLabel }, row.score, row.kind === "exploration" ? "相邻方向探索" : ""));
+        snapshotMap.set(sectionKey, section);
+      }
+      const sections = [...snapshotMap.values()];
+      return NextResponse.json({
+        hasPreferenceData,
+        generatedAt: snapshotRows[0].created_at,
+        message: "今日推荐已固定；其中少量内容来自相邻方向探索",
+        directions: sections,
+        total: sections.reduce((sum, section) => sum + section.papers.length, 0),
+        filterWindow,
+        stats,
       });
     }
 
     const selectedIds = new Set<number>();
+    const customDirectionQueries = new Map((db.prepare("SELECT key, query FROM custom_directions").all() as { key: string; query: string }[])
+      .map((direction) => [direction.key, direction.query]));
     const getDirectionRow = (directionKey: string) => db.prepare(`
       SELECT direction, direction_label
       FROM paper_directions
@@ -199,6 +299,12 @@ export async function GET(request: NextRequest) {
     `).get(directionKey) as { direction: string; direction_label: string } | undefined;
 
     const scoreCandidates = (directionKey: string) => {
+      const timeCondition = windowStart(filterWindow);
+      const filterCondition = filterWindow === "classic"
+        ? "AND p.is_classic = 1"
+        : timeCondition
+          ? `AND (p.published_date >= ${timeCondition} OR (p.published_date IS NULL AND p.year >= CAST(strftime('%Y', ${timeCondition}) AS INTEGER)))`
+          : "";
       const candidates = db.prepare(`
         SELECT p.*, pd.direction_label, s.is_read, s.is_saved, s.is_hidden, s.note,
           EXISTS(
@@ -212,8 +318,12 @@ export async function GET(request: NextRequest) {
         LEFT JOIN paper_user_state s ON s.paper_id = p.id
         WHERE (p.is_relevant IS NULL OR p.is_relevant != 0)
           AND (s.is_hidden IS NULL OR s.is_hidden = 0)
+          ${filterCondition}
         ORDER BY p.is_frontier DESC, p.venue_tier DESC, p.year DESC, p.citations DESC
       `).all(directionKey) as any[];
+      const directionRow = getDirectionRow(directionKey);
+      const directionLabel = directionRow?.direction_label || BUILTIN_DIRECTION_LABELS[directionKey] || directionKey;
+      const directionQuery = customDirectionQueries.get(directionKey) || directionLabel;
 
       const scored = candidates.map((paper) => {
         const base = Number(paper.recommendation_score || 0);
@@ -222,11 +332,14 @@ export async function GET(request: NextRequest) {
         const impact = impactScore(paper.citations, paper.citation_percentile);
         const readAdjustment = paper.is_read ? -0.1 : 0.08;
         const historyAdjustment = paper.recently_shown ? -0.25 : 0;
+        const relevance = directionRelevanceScore(paper, directionKey, directionLabel, directionQuery);
+        if (relevance < 0.22 && !paper.is_classic) return null;
         const directionWeight = directionWeights.get(directionKey) || 1;
-        const score = (base * 0.32 + recency * 0.28 + venue * 0.2 + impact * 0.1 + readAdjustment + historyAdjustment)
+        const score = (base * 0.3 + recency * 0.26 + venue * 0.18 + impact * 0.1 + relevance * 0.16 + readAdjustment + historyAdjustment)
           * (0.85 + directionWeight * 0.15);
-        return { paper, score };
-      }).sort((left, right) => right.score - left.score || (right.paper.year || 0) - (left.paper.year || 0));
+        return { paper: { ...paper, direction_relevance: relevance }, score };
+      }).filter(Boolean) as { paper: any; score: number }[];
+      scored.sort((left, right) => right.score - left.score || (right.paper.year || 0) - (left.paper.year || 0));
 
       const fresh = scored.filter(({ paper }) => !paper.recently_shown);
       return fresh.length >= perDirection ? fresh : scored;
@@ -248,7 +361,16 @@ export async function GET(request: NextRequest) {
         INSERT OR IGNORE INTO daily_recommendation_history (paper_id, direction, shown_on)
         VALUES (?, ?, date('now'))
       `);
-      for (const { paper } of chosen) insertHistory.run(paper.id, directionRow.direction);
+      const insertSnapshot = db.prepare(`
+        INSERT OR IGNORE INTO daily_recommendation_snapshot
+          (recommendation_date, filter_window, direction, paper_id, rank, kind, score)
+        VALUES (date('now'), ?, ?, ?, ?, ?, ?)
+      `);
+      const kind = reasonPrefix ? "exploration" : "personal";
+      for (const [rank, { paper, score }] of chosen.entries()) {
+        insertHistory.run(paper.id, directionRow.direction);
+        insertSnapshot.run(filterWindow, directionRow.direction, paper.id, rank, kind, score);
+      }
       return {
         key: directionRow.direction,
         label,
@@ -288,6 +410,8 @@ export async function GET(request: NextRequest) {
       message: sections.length ? "根据你的研究方向和阅读行为生成；其中少量内容来自相邻方向探索" : "你关注的方向暂时没有可推荐论文",
       directions: sections,
       total: sections.reduce((sum, section) => sum + section.papers.length, 0),
+      filterWindow,
+      stats,
     });
   } catch (error) {
     return NextResponse.json({ error: String(error), directions: [], total: 0 }, { status: 500 });

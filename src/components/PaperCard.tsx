@@ -35,6 +35,8 @@ interface Paper {
   venueVerified?: boolean;
   venueConfidence?: number;
   qualityScore?: number;
+  qualityLabel?: string;
+  directionRelevance?: number | null;
   userState?: { isRead?: boolean; isSaved?: boolean; isHidden?: boolean; note?: string };
 }
 
@@ -154,6 +156,9 @@ export default function PaperCard({ paper }: { paper: Paper }) {
           <span className="rounded bg-gray-100 px-2 py-0.5 text-gray-500">发表渠道待核实</span>
         )}
         {paper.venueVerified && <span className="rounded bg-blue-50 px-2 py-0.5 text-blue-700">渠道已记录</span>}
+        {paper.qualityLabel && (
+          <span className="rounded bg-slate-50 px-2 py-0.5 text-slate-700">质量：{paper.qualityLabel}</span>
+        )}
       </div>
 
       {paper.discoveryReason && (
