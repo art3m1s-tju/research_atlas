@@ -2,9 +2,23 @@ import { NextRequest, NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
 import { BUILTIN_DIRECTION_LABELS } from "@/lib/research-ranking";
+import { ensureDirectionPreferenceSchema } from "@/lib/direction-preferences";
 import { ensureUserStateSchema } from "@/lib/user-state";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
+
+const RELATED_DIRECTIONS: Record<string, string[]> = {
+  e2e: ["planning", "world_model", "perception", "prediction", "safety"],
+  planning: ["control", "prediction", "e2e", "racing", "world_model"],
+  world_model: ["e2e", "rl_driving", "llm_driving", "prediction"],
+  llm_driving: ["world_model", "e2e", "rl_driving", "safety"],
+  control: ["planning", "racing", "safety", "e2e"],
+  perception: ["e2e", "prediction", "world_model", "safety"],
+  prediction: ["planning", "perception", "e2e", "world_model"],
+  rl_driving: ["world_model", "planning", "e2e"],
+  racing: ["planning", "control", "e2e"],
+  safety: ["control", "e2e", "perception", "llm_driving"],
+};
 
 function parseJson(value: string | null, fallback: any) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
@@ -12,6 +26,7 @@ function parseJson(value: string | null, fallback: any) {
 
 function ensureSchema(db: Database.Database) {
   ensureUserStateSchema(db);
+  ensureDirectionPreferenceSchema(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS paper_directions (
       paper_id INTEGER NOT NULL,
@@ -20,7 +35,16 @@ function ensureSchema(db: Database.Database) {
       is_relevant INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (paper_id, direction)
-    )
+    );
+    CREATE TABLE IF NOT EXISTS daily_recommendation_history (
+      paper_id INTEGER NOT NULL,
+      direction TEXT NOT NULL,
+      shown_on TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (paper_id, direction, shown_on)
+    );
+    CREATE INDEX IF NOT EXISTS idx_daily_recommendation_history_date
+      ON daily_recommendation_history(shown_on);
   `);
   const columns = new Set(
     (db.prepare("PRAGMA table_info(paper_directions)").all() as { name: string }[]).map((column) => column.name),
@@ -53,16 +77,16 @@ function recencyScore(year: number | null, publishedDate: string | null) {
   return Math.exp(-ageMonths / 30);
 }
 
-function recommendationReason(paper: any) {
+function recommendationReason(paper: any, prefix = "") {
   const parts: string[] = [];
   if (paper.is_frontier) parts.push("近期前沿");
   if ((paper.venue_tier || 0) >= 3) parts.push("顶会/顶刊");
   if (paper.is_classic) parts.push("经典必读");
   if (!parts.length) parts.push("方向精选");
-  return parts.join(" · ");
+  return [prefix, parts.join(" · ")].filter(Boolean).join(" · ");
 }
 
-function mapPaper(paper: any, direction: { key: string; label: string }, score: number) {
+function mapPaper(paper: any, direction: { key: string; label: string }, score: number, reasonPrefix = "") {
   return {
     id: paper.openalex_id,
     title: paper.title,
@@ -93,7 +117,7 @@ function mapPaper(paper: any, direction: { key: string; label: string }, score: 
     venueTier: paper.venue_tier || 0,
     isFrontier: Boolean(paper.is_frontier),
     isClassic: Boolean(paper.is_classic),
-    discoveryReason: recommendationReason(paper),
+    discoveryReason: recommendationReason(paper, reasonPrefix),
     recommendationScore: score,
     userState: {
       isRead: Boolean(paper.is_read),
@@ -114,7 +138,16 @@ export async function GET(request: NextRequest) {
   try {
     ensureSchema(db);
 
-    const preferenceRows = db.prepare(`
+    const configuredRows = db.prepare(`
+      SELECT direction, weight, is_active
+      FROM direction_preferences
+      ORDER BY weight DESC, updated_at DESC
+    `).all() as { direction: string; weight: number; is_active: number }[];
+    const configuredMap = new Map(configuredRows.map((row) => [row.direction, row]));
+    const activeConfiguredRows = configuredRows.filter((row) => row.is_active !== 0);
+    const disabledDirections = new Set(configuredRows.filter((row) => row.is_active === 0).map((row) => row.direction));
+
+    const behaviorRows = db.prepare(`
       SELECT pd.direction,
         SUM(CASE
           WHEN e.event = 'save' THEN 3
@@ -133,34 +166,47 @@ export async function GET(request: NextRequest) {
       ORDER BY preference_score DESC, papers_interacted DESC
     `).all() as { direction: string; preference_score: number; papers_interacted: number }[];
 
-    const preferenceMap = new Map(preferenceRows.map((row) => [row.direction, row]));
+    const behaviorMap = new Map(behaviorRows.map((row) => [row.direction, row]));
     const directionKeys = requestedDirections.length
       ? requestedDirections
-      : preferenceRows.slice(0, 8).map((row) => row.direction);
+      : activeConfiguredRows.length
+        ? activeConfiguredRows.slice(0, 8).map((row) => row.direction)
+        : behaviorRows.filter((row) => !disabledDirections.has(row.direction)).slice(0, 8).map((row) => row.direction);
+    const directionWeights = new Map(directionKeys.map((key) => [
+      key,
+      configuredMap.get(key)?.weight || (behaviorMap.get(key) ? Math.min(2, 1 + behaviorMap.get(key)!.preference_score / 10) : 1),
+    ]));
+    const hasPreferenceData = activeConfiguredRows.length > 0 || behaviorRows.some((row) => !disabledDirections.has(row.direction));
 
     if (!directionKeys.length) {
       return NextResponse.json({
-        hasPreferenceData: false,
+        hasPreferenceData,
         generatedAt: new Date().toISOString(),
-        message: "还没有足够的兴趣数据。先收藏或标记几篇论文，每个方向就会自动生成每日精选。",
+        message: configuredRows.length > 0
+          ? "目前没有启用的研究方向，请在左侧“管理每日推荐方向”中打开至少一个方向。"
+          : "还没有足够的兴趣数据。先收藏或标记几篇论文，每个方向就会自动生成每日精选。",
         directions: [],
         total: 0,
       });
     }
 
     const selectedIds = new Set<number>();
-    const sections = [];
-    for (const directionKey of directionKeys) {
-      const directionRow = db.prepare(`
-        SELECT direction, direction_label
-        FROM paper_directions
-        WHERE direction = ?
-        LIMIT 1
-      `).get(directionKey) as { direction: string; direction_label: string } | undefined;
-      if (!directionRow) continue;
+    const getDirectionRow = (directionKey: string) => db.prepare(`
+      SELECT direction, direction_label
+      FROM paper_directions
+      WHERE direction = ?
+      LIMIT 1
+    `).get(directionKey) as { direction: string; direction_label: string } | undefined;
 
+    const scoreCandidates = (directionKey: string) => {
       const candidates = db.prepare(`
-        SELECT p.*, pd.direction_label, s.is_read, s.is_saved, s.is_hidden, s.note
+        SELECT p.*, pd.direction_label, s.is_read, s.is_saved, s.is_hidden, s.note,
+          EXISTS(
+            SELECT 1 FROM daily_recommendation_history h
+            WHERE h.paper_id = p.id
+              AND h.shown_on >= date('now', '-3 day')
+              AND h.shown_on < date('now')
+          ) AS recently_shown
         FROM papers p
         JOIN paper_directions pd ON pd.paper_id = p.id AND pd.direction = ? AND pd.is_relevant != 0
         LEFT JOIN paper_user_state s ON s.paper_id = p.id
@@ -174,35 +220,72 @@ export async function GET(request: NextRequest) {
         const recency = recencyScore(paper.year, paper.published_date);
         const venue = Math.min(Math.max(Number(paper.venue_tier || 0), 0) / 3, 1);
         const impact = impactScore(paper.citations, paper.citation_percentile);
-        const unread = paper.is_read ? 0 : 1;
-        const score = base * 0.35 + recency * 0.3 + venue * 0.2 + impact * 0.1 + unread * 0.05;
+        const readAdjustment = paper.is_read ? -0.1 : 0.08;
+        const historyAdjustment = paper.recently_shown ? -0.25 : 0;
+        const directionWeight = directionWeights.get(directionKey) || 1;
+        const score = (base * 0.32 + recency * 0.28 + venue * 0.2 + impact * 0.1 + readAdjustment + historyAdjustment)
+          * (0.85 + directionWeight * 0.15);
         return { paper, score };
       }).sort((left, right) => right.score - left.score || (right.paper.year || 0) - (left.paper.year || 0));
 
+      const fresh = scored.filter(({ paper }) => !paper.recently_shown);
+      return fresh.length >= perDirection ? fresh : scored;
+    };
+
+    const choosePapers = (directionKey: string, limit: number, reasonPrefix = "") => {
+      const directionRow = getDirectionRow(directionKey);
+      if (!directionRow) return null;
       const chosen: { paper: any; score: number }[] = [];
-      for (const candidate of scored) {
+      for (const candidate of scoreCandidates(directionKey)) {
         if (selectedIds.has(candidate.paper.id)) continue;
         chosen.push(candidate);
         selectedIds.add(candidate.paper.id);
-        if (chosen.length >= perDirection) break;
+        if (chosen.length >= limit) break;
       }
-      if (!chosen.length) continue;
-
-      sections.push({
+      if (!chosen.length) return null;
+      const label = directionRow.direction_label || BUILTIN_DIRECTION_LABELS[directionRow.direction] || directionRow.direction;
+      const insertHistory = db.prepare(`
+        INSERT OR IGNORE INTO daily_recommendation_history (paper_id, direction, shown_on)
+        VALUES (?, ?, date('now'))
+      `);
+      for (const { paper } of chosen) insertHistory.run(paper.id, directionRow.direction);
+      return {
         key: directionRow.direction,
-        label: directionRow.direction_label || BUILTIN_DIRECTION_LABELS[directionRow.direction] || directionRow.direction,
-        preferenceScore: preferenceMap.get(directionKey)?.preference_score || 0,
-        papers: chosen.map(({ paper, score }) => mapPaper(paper, {
-          key: directionRow.direction,
-          label: directionRow.direction_label || BUILTIN_DIRECTION_LABELS[directionRow.direction] || directionRow.direction,
-        }, score)),
+        label,
+        papers: chosen.map(({ paper, score }) => mapPaper(paper, { key: directionRow.direction, label }, score, reasonPrefix)),
+      };
+    };
+
+    const sections = [];
+    for (const directionKey of directionKeys) {
+      const section = choosePapers(directionKey, perDirection);
+      if (section) sections.push({ ...section, kind: "personal" });
+    }
+
+    const personalCount = sections.reduce((sum, section) => sum + section.papers.length, 0);
+    const explorationLimit = Math.min(2, Math.max(1, Math.round(personalCount * 0.2)));
+    const explorationKeys = [...new Set(directionKeys.flatMap((key) => RELATED_DIRECTIONS[key] || []))]
+      .filter((key) => !directionKeys.includes(key) && !disabledDirections.has(key));
+    const explorationPapers: any[] = [];
+    for (const directionKey of explorationKeys) {
+      const section = choosePapers(directionKey, explorationLimit, "相邻方向探索");
+      if (!section) continue;
+      explorationPapers.push(...section.papers);
+      if (explorationPapers.length >= explorationLimit) break;
+    }
+    if (explorationPapers.length) {
+      sections.push({
+        key: "exploration",
+        label: "探索邻域",
+        kind: "exploration",
+        papers: explorationPapers.slice(0, explorationLimit),
       });
     }
 
     return NextResponse.json({
-      hasPreferenceData: preferenceRows.length > 0,
+      hasPreferenceData,
       generatedAt: new Date().toISOString(),
-      message: sections.length ? "根据你的阅读与收藏行为生成" : "你关注的方向暂时没有可推荐论文",
+      message: sections.length ? "根据你的研究方向和阅读行为生成；其中少量内容来自相邻方向探索" : "你关注的方向暂时没有可推荐论文",
       directions: sections,
       total: sections.reduce((sum, section) => sum + section.papers.length, 0),
     });

@@ -41,6 +41,7 @@ interface DailyPaper {
 interface DailySection {
   key: string;
   label: string;
+  kind?: "personal" | "exploration";
   papers: DailyPaper[];
 }
 
@@ -69,9 +70,11 @@ export default function DailyRecommendations() {
     loadRecommendations();
     const refresh = () => loadRecommendations();
     window.addEventListener("paper-feedback-updated", refresh);
+    window.addEventListener("direction-preferences-updated", refresh);
     return () => {
       active = false;
       window.removeEventListener("paper-feedback-updated", refresh);
+      window.removeEventListener("direction-preferences-updated", refresh);
     };
   }, []);
 
@@ -104,9 +107,10 @@ export default function DailyRecommendations() {
           {sections.map((section) => (
             <div key={section.key}>
               <div className="mb-3 flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-blue-500" />
+                <span className={`h-2 w-2 rounded-full ${section.kind === "exploration" ? "bg-violet-500" : "bg-blue-500"}`} />
                 <h3 className="font-medium text-gray-900">{section.label}</h3>
                 <span className="text-xs text-gray-500">精选 {section.papers.length} 篇</span>
+                {section.kind === "exploration" && <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700">相邻方向</span>}
               </div>
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 {section.papers.map((paper) => <PaperCard key={`${section.key}-${paper.id}`} paper={paper} />)}

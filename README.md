@@ -11,6 +11,7 @@
 - 一篇论文可同时属于多个研究方向，相关性按“论文-方向”分别判断
 - 前沿论文、经典必读、我的推荐三种阅读视图
 - 独立的“每日推荐”板块：按用户行为为每个兴趣方向精选 1–2 篇论文
+- 可手动打开/关闭研究方向并调整每日推荐权重，同时保留少量相邻方向探索
 - 识别顶会/顶刊、预印本、经典论文和同年份高影响论文
 - 支持新增自定义方向，例如“自动驾驶幻觉控制”
 - 保留 DOI、PDF、数据源链接，并按 DOI、arXiv ID、Semantic Scholar ID 和标题年份去重
@@ -139,6 +140,7 @@ npm run clean:relevance
 - `GET /api/papers`：论文列表，支持 `direction`、`search` 和 `view=recommended|frontier|classic` 参数
 - `GET /api/recommendations`：基于真实 SQLite 论文库的方向推荐
 - `GET /api/daily-recommendations`：按兴趣方向生成每日精选；支持 `limit=1|2`，每个方向最多返回 1–2 篇
+- `GET|POST /api/direction-preferences`：读取或更新每日推荐方向和权重
 - `GET /api/papers/:id`：论文详情和个人状态
 - `POST /api/papers/:id/feedback`：收藏、已读、不感兴趣和笔记
 - `GET /api/sync/status`：后台同步进度、新增/更新统计和可恢复错误

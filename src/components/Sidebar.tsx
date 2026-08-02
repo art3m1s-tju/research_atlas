@@ -8,6 +8,15 @@ interface Direction {
   color: string;
 }
 
+interface DirectionPreference {
+  key: string;
+  label: string;
+  color: string;
+  weight: number;
+  isActive: boolean;
+  explicitlyConfigured: boolean;
+}
+
 interface SidebarProps {
   directions: Direction[];
   selected: string;
@@ -43,6 +52,39 @@ export default function Sidebar({
   const [query, setQuery] = React.useState("");
   const [adding, setAdding] = React.useState(false);
   const [error, setError] = React.useState("");
+  const [showPreferences, setShowPreferences] = React.useState(false);
+  const [preferences, setPreferences] = React.useState<DirectionPreference[]>([]);
+  const [preferencesLoading, setPreferencesLoading] = React.useState(false);
+  const [preferencesError, setPreferencesError] = React.useState("");
+
+  async function loadPreferences() {
+    setPreferencesLoading(true);
+    setPreferencesError("");
+    try {
+      const response = await fetch("/api/direction-preferences", { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "兴趣方向加载失败");
+      setPreferences(data.directions || []);
+    } catch (err) {
+      setPreferencesError(err instanceof Error ? err.message : "兴趣方向加载失败");
+    } finally {
+      setPreferencesLoading(false);
+    }
+  }
+
+  async function updatePreference(direction: string, isActive: boolean, weight: number) {
+    const response = await fetch("/api/direction-preferences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction, isActive, weight }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "兴趣方向更新失败");
+    setPreferences((current) => current.map((item) => item.key === direction
+      ? { ...item, isActive: data.isActive, weight: data.weight, explicitlyConfigured: true }
+      : item));
+    window.dispatchEvent(new CustomEvent("direction-preferences-updated"));
+  }
 
   async function submitDirection(event: React.FormEvent) {
     event.preventDefault();
@@ -73,6 +115,52 @@ export default function Sidebar({
             {showForm ? "收起" : "＋ 新增"}
           </button>
         </div>
+        <button
+          type="button"
+          onClick={() => {
+            const next = !showPreferences;
+            setShowPreferences(next);
+            if (next && !preferences.length) loadPreferences();
+          }}
+          className="mt-3 text-xs font-medium text-gray-500 hover:text-blue-700"
+        >
+          {showPreferences ? "收起兴趣管理" : "⚙ 管理每日推荐方向"}
+        </button>
+        {showPreferences && (
+          <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-2.5">
+            <p className="mb-2 text-[11px] leading-relaxed text-gray-500">
+              打开后会进入“每日推荐”。权重越高，该方向越优先；关闭不会删除论文。
+            </p>
+            {preferencesLoading && <p className="text-xs text-gray-500">加载中...</p>}
+            {preferencesError && <p className="text-xs text-red-600">{preferencesError}</p>}
+            <div className="max-h-64 space-y-1 overflow-y-auto">
+              {preferences.map((preference) => (
+                <div key={preference.key} className="flex items-center gap-1.5 rounded px-1 py-1 hover:bg-white">
+                  <button
+                    type="button"
+                    onClick={() => updatePreference(preference.key, !preference.isActive, preference.weight).catch((err) => setPreferencesError(err.message))}
+                    className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border text-[10px] ${preference.isActive ? "border-blue-600 bg-blue-600 text-white" : "border-gray-300 bg-white text-transparent"}`}
+                    aria-label={`${preference.isActive ? "关闭" : "开启"}${preference.label}`}
+                  >
+                    ✓
+                  </button>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-gray-700">{preference.label}</span>
+                  <select
+                    value={preference.weight}
+                    onChange={(event) => updatePreference(preference.key, preference.isActive, Number(event.target.value)).catch((err) => setPreferencesError(err.message))}
+                    className="w-14 rounded border border-gray-200 bg-white px-1 py-0.5 text-[10px] text-gray-600"
+                    aria-label={`${preference.label}推荐权重`}
+                  >
+                    <option value="0.5">低</option>
+                    <option value="1">标准</option>
+                    <option value="1.5">高</option>
+                    <option value="2">重点</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {showForm && (
           <form onSubmit={submitDirection} className="mt-4 space-y-2">
             <input
