@@ -23,6 +23,8 @@ type Paper = {
   year: number | null;
   venue: string | null;
   doi: string | null;
+  summary_model: string | null;
+  summary_source_hash: string | null;
 };
 
 type Summary = {
@@ -153,13 +155,14 @@ async function main() {
 
   const db = new Database(process.env.DATABASE_PATH || "./data/atlas.db");
   ensureSchema(db);
-  const papers = db.prepare(`
-    SELECT id, title, abstract, authors, year, venue, doi
+  const allPapers = db.prepare(`
+    SELECT id, title, abstract, authors, year, venue, doi, summary_model, summary_source_hash
     FROM papers
-    WHERE summary_source_hash IS NULL OR summary_model != ?
     ORDER BY citations DESC, year DESC
-    ${LIMIT > 0 ? "LIMIT ?" : ""}
-  `).all(...(LIMIT > 0 ? [MODEL, LIMIT] : [MODEL])) as Paper[];
+  `).all() as Paper[];
+  const papers = allPapers
+    .filter((paper) => paper.summary_model !== MODEL || paper.summary_source_hash !== sourceHash(paper))
+    .slice(0, LIMIT > 0 ? LIMIT : undefined);
 
   console.log(`准备生成 ${papers.length} 篇中文论文解读，模型=${MODEL}，并发=${CONCURRENCY}`);
   let completed = 0;
