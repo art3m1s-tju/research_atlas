@@ -30,6 +30,7 @@ const OPENALEX_API_KEY = process.env.OPENALEX_API_KEY;
 const SEMANTIC_SCHOLAR_API_KEY = process.env.SEMANTIC_SCHOLAR_API_KEY;
 const CROSSREF_MAILTO = process.env.CROSSREF_MAILTO || process.env.UNPAYWALL_EMAIL;
 const UNPAYWALL_EMAIL = process.env.UNPAYWALL_EMAIL;
+let semanticScholarNoticeShown = false;
 
 const BUILTIN_QUERIES: Record<string, string> = {
   e2e: "end-to-end autonomous driving planning perception UniAD VAD SparseDrive",
@@ -193,7 +194,10 @@ async function fetchArxiv(query: string): Promise<PaperRecord[]> {
 
 async function fetchSemanticScholar(query: string): Promise<PaperRecord[]> {
   if (!SEMANTIC_SCHOLAR_API_KEY) {
-    console.log("  Semantic Scholar skipped: SEMANTIC_SCHOLAR_API_KEY is not configured");
+    if (!semanticScholarNoticeShown) {
+      console.log("  Semantic Scholar 未配置（可选），本次跳过补充引用数据");
+      semanticScholarNoticeShown = true;
+    }
     return [];
   }
   const params = new URLSearchParams({
