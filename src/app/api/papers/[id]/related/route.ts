@@ -4,6 +4,7 @@ import path from "path";
 import { cosineSimilarity, lexicalScore, parseEmbedding } from "@/lib/semantic-search";
 import { ensureResearchFeatureSchema } from "@/lib/research-features";
 import { ensureUserStateSchema } from "@/lib/user-state";
+import { decodePaperId } from "@/lib/paper-id";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 const OPENALEX_API_KEY = process.env.OPENALEX_API_KEY;
@@ -49,7 +50,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
   try {
     ensureUserStateSchema(db);
     ensureResearchFeatureSchema(db);
-    const paper = db.prepare("SELECT * FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as any;
+    const paper = db.prepare("SELECT * FROM papers WHERE openalex_id = ?").get(decodePaperId(id)) as any;
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
     const directionRows = db.prepare("SELECT direction FROM paper_directions WHERE paper_id = ? AND is_relevant != 0").all(paper.id) as { direction: string }[];
     const directionKeys = directionRows.map((row) => row.direction);

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
 import { applyUserAction, ensureUserStateSchema, UserAction } from "@/lib/user-state";
+import { decodePaperId } from "@/lib/paper-id";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 const ACTIONS = new Set<UserAction>(["read", "unread", "save", "unsave", "hide", "unhide", "note"]);
@@ -28,7 +29,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         PRIMARY KEY (recommendation_date, filter_window, direction, rank)
       )
     `);
-    const paper = db.prepare("SELECT id FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as { id: number } | undefined;
+    const paper = db.prepare("SELECT id FROM papers WHERE openalex_id = ?").get(decodePaperId(id)) as { id: number } | undefined;
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
     const state = applyUserAction(db, paper.id, action, typeof body.note === "string" ? body.note : undefined);
     db.prepare("DELETE FROM daily_recommendation_snapshot WHERE recommendation_date = date('now') AND paper_id = ?").run(paper.id);

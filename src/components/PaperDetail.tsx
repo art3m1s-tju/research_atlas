@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import ClassificationPanel, { type ClassificationResult } from "@/components/ClassificationPanel";
+import { decodePaperId } from "@/lib/paper-id";
 
 type Paper = {
   dbId: number;
@@ -41,6 +42,7 @@ type EvidenceItem = { type: string; label: string; content: string; source: stri
 type TranslationState = { status: "pending" | "running" | "completed" | "failed"; source_url?: string | null; error?: string | null; previewUrl?: string | null; markdownUrl?: string | null; source_chars?: number; translated_chars?: number; updated_at?: string };
 
 export default function PaperDetail({ id }: { id: string }) {
+  const canonicalId = decodePaperId(id);
   const [paper, setPaper] = useState<Paper | null>(null);
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(true);
@@ -60,10 +62,10 @@ export default function PaperDetail({ id }: { id: string }) {
 
   useEffect(() => {
     Promise.all([
-      fetch(`/api/papers/${encodeURIComponent(id)}`).then((response) => response.json()),
-      fetch(`/api/papers/${encodeURIComponent(id)}/related`).then((response) => response.json()).catch(() => ({ similar: [], citedBy: [], references: [] })),
-      fetch(`/api/papers/${encodeURIComponent(id)}/evidence`).then((response) => response.json()).catch(() => ({ evidence: [], note: "证据卡暂时不可用" })),
-      fetch(`/api/papers/${encodeURIComponent(id)}/translation`, { cache: "no-store" }).then((response) => response.json()).catch(() => ({ translation: null })),
+      fetch(`/api/papers/${encodeURIComponent(canonicalId)}`).then((response) => response.json()),
+      fetch(`/api/papers/${encodeURIComponent(canonicalId)}/related`).then((response) => response.json()).catch(() => ({ similar: [], citedBy: [], references: [] })),
+      fetch(`/api/papers/${encodeURIComponent(canonicalId)}/evidence`).then((response) => response.json()).catch(() => ({ evidence: [], note: "证据卡暂时不可用" })),
+      fetch(`/api/papers/${encodeURIComponent(canonicalId)}/translation`, { cache: "no-store" }).then((response) => response.json()).catch(() => ({ translation: null })),
     ]).then(([data, relationData, evidenceData, translationData]) => {
       setPaper(data.paper || null);
       setNote(data.paper?.userState?.note || "");
@@ -72,20 +74,20 @@ export default function PaperDetail({ id }: { id: string }) {
       setEvidence({ items: evidenceData.evidence || [], note: evidenceData.note });
       setTranslation(translationData.translation || null);
     }).finally(() => setLoading(false));
-  }, [id]);
+  }, [canonicalId]);
 
   const translationStatus = translation?.status;
   useEffect(() => {
     if (!translationStatus || !["pending", "running"].includes(translationStatus)) return;
     const timer = window.setInterval(async () => {
-      const response = await fetch(`/api/papers/${encodeURIComponent(id)}/translation`, { cache: "no-store" });
+      const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/translation`, { cache: "no-store" });
       if (response.ok) setTranslation((await response.json()).translation || null);
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [id, translationStatus]);
+  }, [canonicalId, translationStatus]);
 
   async function feedback(action: string, payload: Record<string, unknown> = {}) {
-    const response = await fetch(`/api/papers/${encodeURIComponent(id)}/feedback`, {
+    const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/feedback`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, ...payload }),
@@ -97,7 +99,7 @@ export default function PaperDetail({ id }: { id: string }) {
   }
 
   async function markRelevance(direction: string, label: "relevant" | "partial" | "irrelevant") {
-    const response = await fetch(`/api/papers/${encodeURIComponent(id)}/relevance`, {
+    const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/relevance`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ direction, label }),
@@ -108,7 +110,7 @@ export default function PaperDetail({ id }: { id: string }) {
   async function loadFullTextEvidence() {
     setEvidenceLoading(true);
     try {
-      const response = await fetch(`/api/papers/${encodeURIComponent(id)}/evidence?fulltext=1`, { cache: "no-store" });
+      const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/evidence?fulltext=1`, { cache: "no-store" });
       const data = await response.json();
       setEvidence({ items: data.evidence || [], note: data.note || data.warning });
     } finally {
@@ -137,7 +139,7 @@ export default function PaperDetail({ id }: { id: string }) {
   async function startTranslation() {
     setTranslationStarting(true);
     try {
-      const response = await fetch(`/api/papers/${encodeURIComponent(id)}/translation`, { method: "POST" });
+      const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/translation`, { method: "POST" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "翻译任务启动失败");
       setTranslation((current) => ({ ...(current || {}), status: data.status || "pending", error: null } as TranslationState));
@@ -149,7 +151,7 @@ export default function PaperDetail({ id }: { id: string }) {
   async function translateAbstract() {
     setAbstractTranslating(true);
     try {
-      const response = await fetch(`/api/papers/${encodeURIComponent(id)}/abstract-translation`, { method: "POST" });
+      const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/abstract-translation`, { method: "POST" });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "中文摘要生成失败");
       setPaper((current) => current ? { ...current, abstractZh: data.abstractZh } : current);

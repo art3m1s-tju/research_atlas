@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
 import { ensureUserStateSchema } from "@/lib/user-state";
+import { decodePaperId } from "@/lib/paper-id";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 
@@ -22,7 +23,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     ensureUserStateSchema(db);
     ensureAbstractTranslationColumns(db);
-    const paper = db.prepare("SELECT * FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as any;
+    const paper = db.prepare("SELECT * FROM papers WHERE openalex_id = ?").get(decodePaperId(id)) as any;
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
     const directions = db.prepare(`
       SELECT direction as key, direction_label as label

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
+import { decodePaperId } from "@/lib/paper-id";
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
 const MODEL = process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
@@ -23,7 +24,7 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
   const db = new Database(DB_PATH);
   try {
     ensureColumns(db);
-    const paper = db.prepare("SELECT id, title, abstract, doi, abstract_zh, abstract_translation_model, abstract_translation_source_hash FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as any;
+    const paper = db.prepare("SELECT id, title, abstract, doi, abstract_zh, abstract_translation_model, abstract_translation_source_hash FROM papers WHERE openalex_id = ?").get(decodePaperId(id)) as any;
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
     if (!paper.abstract) return NextResponse.json({ error: "这篇论文没有英文摘要，无法生成中文摘要。" }, { status: 400 });
     const hash = sourceHash(paper);

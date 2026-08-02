@@ -6,11 +6,12 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { ensureResearchFeatureSchema } from "@/lib/research-features";
 import { translationDirectory, translationSourceHash, translationUrlCandidates } from "@/lib/paper-translation";
+import { decodePaperId } from "@/lib/paper-id";
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
 
 function paperFromId(db: Database.Database, id: string) {
-  return db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as any;
+  return db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE openalex_id = ?").get(decodePaperId(id)) as any;
 }
 
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
@@ -32,8 +33,8 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     }
     return NextResponse.json({ translation: row ? {
       ...row,
-      previewUrl: row.status === "completed" ? `/papers/${encodeURIComponent(id)}/translation` : null,
-      markdownUrl: row.status === "completed" ? `/api/papers/${encodeURIComponent(id)}/translation?file=translation_zh.md` : null,
+      previewUrl: row.status === "completed" ? `/papers/${encodeURIComponent(decodePaperId(id))}/translation` : null,
+      markdownUrl: row.status === "completed" ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_zh.md` : null,
     } : null });
   } finally { db.close(); }
 }

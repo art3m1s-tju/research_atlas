@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "@/lib/research-features";
+import { decodePaperId } from "@/lib/paper-id";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 const execFileAsync = promisify(execFile);
@@ -76,7 +77,7 @@ export async function GET(_request: NextRequest, context: { params: Promise<{ id
   const db = new Database(DB_PATH);
   try {
     ensureResearchFeatureSchema(db);
-    const paper = db.prepare("SELECT * FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as any;
+    const paper = db.prepare("SELECT * FROM papers WHERE openalex_id = ?").get(decodePaperId(id)) as any;
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
     const cached = db.prepare("SELECT evidence_json, source, source_url, generated_at FROM paper_evidence WHERE paper_id = ?").get(paper.id) as any;
     let evidence = cached ? parseJson(cached.evidence_json, []) : buildEvidence(paper);
@@ -114,7 +115,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
   const db = new Database(DB_PATH);
   try {
     ensureResearchFeatureSchema(db);
-    const paper = db.prepare("SELECT id, pdf_url, doi FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as any;
+    const paper = db.prepare("SELECT id, pdf_url, doi FROM papers WHERE openalex_id = ?").get(decodePaperId(id)) as any;
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
     db.prepare("INSERT OR REPLACE INTO paper_evidence (paper_id, evidence_json, source, source_url) VALUES (?, ?, ?, ?)")
       .run(paper.id, JSON.stringify(body.evidence), body.source || "外部全文解析", body.sourceUrl || paper.pdf_url || paper.doi || null);
