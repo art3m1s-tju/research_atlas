@@ -148,7 +148,7 @@ export async function GET(request: Request) {
       ...Object.fromEntries(customMeta.map((item) => [item.key, { label: item.label, color: item.color }])),
     };
     
-    let query = "SELECT * FROM papers";
+    let query = "SELECT papers.*, COALESCE((SELECT is_saved FROM paper_user_state WHERE paper_id = papers.id), 0) AS user_is_saved FROM papers";
     const conditions: string[] = [];
     const params: any[] = [];
     
@@ -193,12 +193,13 @@ export async function GET(request: Request) {
           return { ...paper, matchScore: score };
         })
         .filter((paper) => paper.matchScore > 0)
-        .sort((left, right) => right.matchScore - left.matchScore)
+        .sort((left, right) => Number(Boolean(right.user_is_saved)) - Number(Boolean(left.user_is_saved)) || right.matchScore - left.matchScore)
         .slice(0, 100);
     } else {
       papers = papers
         .sort((left, right) =>
-          (right.recommendation_score || 0) - (left.recommendation_score || 0)
+          Number(Boolean(right.user_is_saved)) - Number(Boolean(left.user_is_saved))
+          || (right.recommendation_score || 0) - (left.recommendation_score || 0)
           || (right.is_frontier || 0) - (left.is_frontier || 0)
           || (right.year || 0) - (left.year || 0)
           || (right.citations || 0) - (left.citations || 0)

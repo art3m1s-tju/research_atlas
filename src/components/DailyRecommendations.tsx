@@ -62,6 +62,7 @@ export default function DailyRecommendations() {
   const [loading, setLoading] = useState(true);
   const [filterWindow, setFilterWindow] = useState("all");
   const [stats, setStats] = useState<RecommendationStats | null>(null);
+  const [expanded, setExpanded] = useState(true);
 
   useEffect(() => {
     let active = true;
@@ -96,16 +97,17 @@ export default function DailyRecommendations() {
     <section className="mb-8 rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50 via-white to-amber-50 p-5">
       <div className="mb-4 flex items-start justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} className="flex items-center gap-2 text-left">
             <span className="text-xl">☀️</span>
             <h2 className="text-xl font-semibold text-gray-900">每日推荐</h2>
-          </div>
+            <span className="text-sm text-gray-500">{expanded ? "⌃" : "⌄"}</span>
+          </button>
           <p className="mt-1 text-sm text-gray-600">每个感兴趣方向精选 1–2 篇，优先近期前沿与高质量论文。</p>
         </div>
-        <span className="rounded-full bg-white/80 px-3 py-1 text-xs text-gray-500">按行为更新</span>
+        <button type="button" onClick={() => setExpanded((value) => !value)} className="rounded-full bg-white/80 px-3 py-1 text-xs text-gray-500 hover:bg-white">{expanded ? "收起" : "展开"}</button>
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      {expanded && <div className="mb-4 flex flex-wrap items-center gap-2">
         <span className="text-xs text-gray-500">论文范围：</span>
         {[
           ["all", "综合"],
@@ -128,20 +130,20 @@ export default function DailyRecommendations() {
             近 30 天：收藏 {stats.saved} · 已读 {stats.read} · 隐藏 {stats.hidden} · 近 7 天推荐 {stats.recommendationsLast7Days}
           </span>
         )}
-      </div>
+      </div>}
 
-      {loading ? (
+      {expanded && loading ? (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {[0, 1].map((item) => <div key={item} className="h-24 animate-pulse rounded-xl bg-white/70" />)}
         </div>
-      ) : !hasPreferenceData ? (
+      ) : expanded && !hasPreferenceData ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-4 text-sm text-amber-900">
           {message}
           <div className="mt-2 text-xs text-amber-700">不会凭空猜测你的兴趣；收藏、已读和“不感兴趣”都会帮助它逐步形成。</div>
         </div>
-      ) : sections.length === 0 ? (
+      ) : expanded && sections.length === 0 ? (
         <div className="rounded-xl bg-white/70 px-4 py-4 text-sm text-gray-600">{message}</div>
-      ) : (
+      ) : expanded ? (
         <div className="space-y-6">
           {sections.map((section) => (
             <div key={section.key}>
@@ -152,12 +154,12 @@ export default function DailyRecommendations() {
                 {section.kind === "exploration" && <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700">相邻方向</span>}
               </div>
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {section.papers.map((paper) => <PaperCard key={`${section.key}-${paper.id}`} paper={paper} />)}
+                {section.papers.slice().sort((left, right) => Number(Boolean(right.userState?.isSaved)) - Number(Boolean(left.userState?.isSaved))).map((paper) => <PaperCard key={`${section.key}-${paper.id}`} paper={paper} />)}
               </div>
             </div>
           ))}
         </div>
-      )}
+      ) : null}
     </section>
   );
 }

@@ -5,12 +5,12 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { ensureResearchFeatureSchema } from "@/lib/research-features";
-import { translationDirectory, translationSourceHash } from "@/lib/paper-translation";
+import { translationDirectory, translationSourceHash, translationUrlCandidates } from "@/lib/paper-translation";
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
 
 function paperFromId(db: Database.Database, id: string) {
-  return db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as any;
+  return db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as any;
 }
 
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
@@ -41,7 +41,11 @@ export async function POST(_request: NextRequest, context: { params: Promise<{ i
     ensureResearchFeatureSchema(db);
     const paper = paperFromId(db, id);
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
-    if (!paper.pdf_url && !paper.arxiv_id) return NextResponse.json({ error: "这篇论文没有可访问的 PDF，暂时无法生成全文翻译。" }, { status: 400 });
+    const alternatives = paper.normalized_title
+      ? db.prepare("SELECT pdf_url, arxiv_id FROM papers WHERE normalized_title = ? AND id != ?").all(paper.normalized_title, paper.id) as { pdf_url?: string | null; arxiv_id?: string | null }[]
+      : [];
+    const candidates = translationUrlCandidates(paper, alternatives);
+    if (!candidates.length) return NextResponse.json({ error: "这篇论文没有可访问的 PDF，暂时无法生成全文翻译。" }, { status: 400 });
     const sourceHash = translationSourceHash(paper);
     const existing = db.prepare("SELECT status, source_hash, error FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
     if (existing?.status === "completed" && existing.source_hash === sourceHash) {

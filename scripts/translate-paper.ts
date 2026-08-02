@@ -6,7 +6,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { splitTranslationChunks, translationDirectory, translationPrompt, translationSourceHash } from "../src/lib/paper-translation";
+import { splitTranslationChunks, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates } from "../src/lib/paper-translation";
 
 const execFileAsync = promisify(execFile);
 let dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
@@ -34,7 +34,7 @@ async function extractPdf(urls: string[]) {
       const response = await fetch(url, { headers: { Accept: "application/pdf", "User-Agent": "AI-Research-Atlas/0.1" }, signal: AbortSignal.timeout(60000) });
       if (!response.ok) { lastError = `PDF 请求失败：${response.status}`; continue; }
       const bytes = Buffer.from(await response.arrayBuffer());
-      if (!bytes.subarray(0, 4).toString().startsWith("%PDF")) { lastError = "数据源返回的不是 PDF"; continue; }
+      if (!bytes.subarray(0, 4).toString().startsWith("%PDF")) { lastError = `数据源不是 PDF：${url}（可能是 DOI 跳转页）`; continue; }
       const temporaryPath = path.join(os.tmpdir(), `ai-research-atlas-translation-${Date.now()}.pdf`);
       await fs.writeFile(temporaryPath, bytes);
       try {
@@ -82,13 +82,16 @@ async function main() {
   if (!Number.isInteger(paperId) || paperId <= 0) throw new Error("用法：tsx scripts/translate-paper.ts --paper-id <id>");
   const db = new Database(dbPath);
   ensureResearchFeatureSchema(db);
-  const paper = db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id FROM papers WHERE id = ?").get(paperId) as any;
+  const paper = db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE id = ?").get(paperId) as any;
   if (!paper) throw new Error("论文不存在");
   if (!process.env.DEEPSEEK_API_KEY) throw new Error("DEEPSEEK_API_KEY 未配置");
   const sourceHash = translationSourceHash(paper);
   const outputDirectory = path.join(process.cwd(), translationDirectory(paperId));
   await fs.mkdir(outputDirectory, { recursive: true });
-  const candidates = [paper.pdf_url, paper.arxiv_id ? `https://arxiv.org/pdf/${String(paper.arxiv_id).replace(/\.pdf$/, "")}.pdf` : ""];
+  const alternatives = paper.normalized_title
+    ? db.prepare("SELECT pdf_url, arxiv_id FROM papers WHERE normalized_title = ? AND id != ?").all(paper.normalized_title, paper.id) as { pdf_url?: string | null; arxiv_id?: string | null }[]
+    : [];
+  const candidates = translationUrlCandidates(paper, alternatives);
   const extracted = await extractPdf(candidates);
   const chunks = splitTranslationChunks(extracted.text);
   await fs.writeFile(path.join(outputDirectory, "source.md"), `# ${paper.title}\n\n来源：${extracted.url}\n\n---\n\n${extracted.text}\n`, "utf8");

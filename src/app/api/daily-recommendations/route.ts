@@ -274,7 +274,7 @@ export async function GET(request: NextRequest) {
         AND s.filter_window = ?
         AND (p.is_relevant IS NULL OR p.is_relevant != 0)
         AND (us.is_hidden IS NULL OR us.is_hidden = 0)
-      ORDER BY s.kind, s.direction, s.rank
+      ORDER BY s.kind, s.direction, COALESCE(us.is_saved, 0) DESC, s.rank
     `).all(filterWindow) as any[];
     if (snapshotRows.length) {
       const snapshotMap = new Map<string, any>();
@@ -359,7 +359,7 @@ export async function GET(request: NextRequest) {
           * (0.85 + directionWeight * 0.15);
         return { paper: { ...paper, direction_relevance: relevance }, score };
       }).filter(Boolean) as { paper: any; score: number }[];
-      scored.sort((left, right) => right.score - left.score || (right.paper.year || 0) - (left.paper.year || 0));
+      scored.sort((left, right) => Number(Boolean(right.paper.is_saved)) - Number(Boolean(left.paper.is_saved)) || right.score - left.score || (right.paper.year || 0) - (left.paper.year || 0));
 
       const fresh = scored.filter(({ paper }) => !paper.recently_shown);
       return fresh.length >= perDirection ? fresh : scored;

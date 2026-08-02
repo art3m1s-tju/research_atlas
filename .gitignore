@@ -15,6 +15,10 @@ data/sync.log
 data/sync.lock
 data/sync-checkpoints.json
 data/daily-digest.md
+data/translation-*.log
+data/atlas-web.log
+data/atlas-web.pid
+data/translations/
 
 # env
 .env.local

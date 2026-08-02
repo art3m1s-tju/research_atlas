@@ -8,6 +8,15 @@ export function translationDirectory(paperId: number) {
   return `data/translations/${paperId}`;
 }
 
+function looksLikePdfUrl(value: string) {
+  return /arxiv\.org\/pdf|\.pdf(?:[?#]|$)|download/i.test(value);
+}
+
+export function translationUrlCandidates(paper: { pdf_url?: string | null; arxiv_id?: string | null }, alternatives: Array<{ pdf_url?: string | null; arxiv_id?: string | null }> = []) {
+  const urls = [paper.pdf_url || "", ...alternatives.flatMap((item) => [item.pdf_url || ""]), paper.arxiv_id ? `https://arxiv.org/pdf/${paper.arxiv_id.replace(/\.pdf$/, "")}.pdf` : "", ...alternatives.map((item) => item.arxiv_id ? `https://arxiv.org/pdf/${item.arxiv_id.replace(/\.pdf$/, "")}.pdf` : "")].filter(Boolean);
+  return [...new Set(urls)].sort((left, right) => Number(looksLikePdfUrl(right)) - Number(looksLikePdfUrl(left)));
+}
+
 export function splitTranslationChunks(text: string, maxChars = 9000) {
   const paragraphs = text.replace(/\r/g, "").split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
   const chunks: string[] = [];
