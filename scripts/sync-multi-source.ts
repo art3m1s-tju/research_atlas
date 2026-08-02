@@ -314,6 +314,8 @@ function ensureSchema(db: Database.Database) {
     sources: "TEXT NOT NULL DEFAULT '[]'",
     source_ids: "TEXT NOT NULL DEFAULT '{}'",
     source_urls: "TEXT NOT NULL DEFAULT '{}'",
+    embedding: "TEXT",
+    embedding_model: "TEXT",
   };
   for (const [column, type] of Object.entries(additions)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE papers ADD COLUMN ${column} ${type}`);
@@ -347,7 +349,12 @@ function findExisting(db: Database.Database, paper: PaperRecord) {
   return db.prepare("SELECT * FROM papers WHERE normalized_title = ? AND year = ? LIMIT 1").get(normalizeTitle(paper.title), paper.year) as any;
 }
 
-function upsertPaper(db: Database.Database, paper: PaperRecord, direction: { key: string; label: string }) {
+function upsertPaper(
+  db: Database.Database,
+  paper: PaperRecord,
+  direction: { key: string; label: string },
+  embeddingModel: string,
+) {
   const existing = findExisting(db, paper);
   const currentSources = parseJson(existing?.sources, [] as string[]);
   const currentIds = parseJson(existing?.source_ids, {} as Record<string, string>);
@@ -378,12 +385,19 @@ function upsertPaper(db: Database.Database, paper: PaperRecord, direction: { key
   };
   if (existing) {
     db.prepare(`UPDATE papers SET title=@title, abstract=@abstract, year=@year, venue=@venue, citations=@citations, authors=@authors, doi=@doi, pdf_url=@pdf_url, direction=@direction, direction_label=@direction_label, publication_channel=@publication_channel, arxiv_id=@arxiv_id, semantic_scholar_id=@semantic_scholar_id, normalized_title=@normalized_title, sources=@sources, source_ids=@source_ids, source_urls=@source_urls, updated_at=CURRENT_TIMESTAMP WHERE id=@id`).run({ ...values, id: existing.id });
+    return {
+      id: existing.id as number,
+      needsEmbedding: !existing.embedding || existing.embedding_model !== embeddingModel,
+    };
   } else {
     db.prepare(`INSERT OR IGNORE INTO papers (openalex_id,title,abstract,year,venue,citations,authors,doi,pdf_url,direction,direction_label,publication_channel,arxiv_id,semantic_scholar_id,normalized_title,sources,source_ids,source_urls) VALUES (@openalex_id,@title,@abstract,@year,@venue,@citations,@authors,@doi,@pdf_url,@direction,@direction_label,@publication_channel,@arxiv_id,@semantic_scholar_id,@normalized_title,@sources,@source_ids,@source_urls)`).run(values);
+    const inserted = findExisting(db, paper);
+    return { id: inserted.id as number, needsEmbedding: true };
   }
 }
 
 async function main() {
+  const { EMBEDDING_MODEL, embedText, paperEmbeddingText } = await import("../src/lib/semantic-search");
   const db = new Database(DB_PATH);
   ensureSchema(db);
   const custom = db.prepare("SELECT key, label, query FROM custom_directions").all() as { key: string; label: string; query: string }[];
@@ -392,6 +406,7 @@ async function main() {
     ...custom,
   ];
   let totalFetched = 0;
+  let embeddingUnavailable = false;
   for (const direction of directions) {
     console.log(`\n📚 ${direction.label} (${direction.key})`);
     const records = [
@@ -407,7 +422,17 @@ async function main() {
     }
     for (const record of deduped.values()) {
       const enriched = await enrichUnpaywall(await enrichCrossref(record));
-      upsertPaper(db, enriched, direction);
+      const upserted = upsertPaper(db, enriched, direction, EMBEDDING_MODEL);
+      if (upserted.needsEmbedding && !embeddingUnavailable) {
+        try {
+          const embedding = await embedText(paperEmbeddingText(enriched));
+          db.prepare("UPDATE papers SET embedding = ?, embedding_model = ? WHERE id = ?")
+            .run(JSON.stringify(embedding), EMBEDDING_MODEL, upserted.id);
+        } catch (error) {
+          embeddingUnavailable = true;
+          console.error(`  语义向量暂不可用，将继续保存论文数据: ${error instanceof Error ? error.message : error}`);
+        }
+      }
       totalFetched += 1;
     }
     console.log(`  ✓ ${deduped.size} records merged`);

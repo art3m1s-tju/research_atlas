@@ -11,9 +11,11 @@
     "db:reset": "rm -f data/atlas.db && npm run db:seed",
     "sync:full": "tsx scripts/sync-multi-source.ts",
     "sync:custom": "tsx scripts/sync-multi-source.ts",
+    "embeddings:backfill": "tsx scripts/embed-papers.ts",
     "sync:incremental": "tsx scripts/update-citations.ts"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@tanstack/react-query": "^5.0.0",
     "@trpc/client": "^11.0.0",
     "@trpc/next": "^11.0.0",

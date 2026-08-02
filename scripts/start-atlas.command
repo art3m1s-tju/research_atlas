@@ -2,6 +2,9 @@
 
 set -u
 
+# Node 22+/25 can use the user's HTTPS proxy for the first model download.
+export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"
+
 ROOT_DIR="${0:A:h:h}"
 cd "$ROOT_DIR"
 

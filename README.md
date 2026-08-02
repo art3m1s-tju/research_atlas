@@ -44,12 +44,17 @@ CROSSREF_MAILTO=your-email@example.com
 UNPAYWALL_EMAIL=your-email@example.com
 
 DATABASE_PATH=./data/atlas.db
+
+# 本地语义检索模型（首次同步时自动下载）
+EMBEDDING_MODEL=Xenova/paraphrase-multilingual-MiniLM-L12-v2
+TRANSFORMERS_CACHE=./.cache/transformers
 ```
 
 说明：
 
 - arXiv 不需要注册或 API Key，但它不提供引用量，因此纯 arXiv 记录可能显示“暂无数据”。
 - OpenAlex Key 启用后，论文会获得引用量并按引用量排序。
+- 语义检索使用本地多语言 embedding 模型；首次同步会下载模型，之后复用本地缓存。
 - Crossref 用于 DOI、期刊/会议元数据校正。
 - Unpaywall 用于寻找合法开放获取 PDF。
 - `.env.local` 和 `data/*.db` 已被 `.gitignore` 排除，不应提交密钥或本地数据库。
@@ -60,6 +65,12 @@ DATABASE_PATH=./data/atlas.db
 
 ```bash
 npm run sync:full
+```
+
+如果已有论文库、只想补生成语义向量，可以运行：
+
+```bash
+npm run embeddings:backfill
 ```
 
 网页中的“同步最新论文”按钮和每日任务也调用同一个多源同步器：

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
+import { cosineSimilarity, lexicalScore, parseEmbedding } from "@/lib/semantic-search";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 
@@ -21,6 +22,14 @@ function parseJson(value: string | null, fallback: any) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 }
 
+function ensureEmbeddingSchema(db: Database.Database) {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(papers)").all() as { name: string }[]).map((column) => column.name),
+  );
+  if (!columns.has("embedding")) db.exec("ALTER TABLE papers ADD COLUMN embedding TEXT");
+  if (!columns.has("embedding_model")) db.exec("ALTER TABLE papers ADD COLUMN embedding_model TEXT");
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const direction = searchParams.get("direction") || "all";
@@ -28,6 +37,7 @@ export async function GET(request: Request) {
 
   try {
     const db = new Database(DB_PATH);
+    ensureEmbeddingSchema(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS custom_directions (
         key TEXT PRIMARY KEY,
@@ -54,17 +64,45 @@ export async function GET(request: Request) {
       conditions.push("direction = ?");
       params.push(direction);
     }
-    if (search) {
-      conditions.push("(title LIKE ? OR abstract LIKE ? OR authors LIKE ?)");
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
-    }
-    
     if (conditions.length > 0) {
       query += " WHERE " + conditions.join(" AND ");
     }
-    query += " ORDER BY citations DESC LIMIT 100";
-    
-    const papers = db.prepare(query).all(...params) as any[];
+
+    let papers = db.prepare(query).all(...params) as any[];
+    let searchMode = "citations";
+    if (search.trim()) {
+      let queryEmbedding: number[] | null = null;
+      try {
+        const { embedText } = await import("@/lib/semantic-search");
+        queryEmbedding = await embedText(search.trim());
+        searchMode = "hybrid";
+      } catch (error) {
+        console.warn("Semantic search unavailable; falling back to keyword ranking", error);
+        searchMode = "keyword-fallback";
+      }
+
+      papers = papers
+        .map((paper) => {
+          const text = [paper.title, paper.abstract, paper.authors, paper.venue]
+            .filter(Boolean)
+            .join(" ");
+          const semantic = queryEmbedding && parseEmbedding(paper.embedding)
+            ? Math.max(0, cosineSimilarity(queryEmbedding, parseEmbedding(paper.embedding) || []))
+            : 0;
+          const lexical = lexicalScore(text, search);
+          const citation = Math.min(Math.log10((paper.citations || 0) + 1) / 4, 1);
+          const score = queryEmbedding
+            ? semantic * 0.7 + lexical * 0.2 + citation * 0.1
+            : lexical * 0.8 + citation * 0.2;
+          return { ...paper, matchScore: score };
+        })
+        .filter((paper) => paper.matchScore > 0)
+        .sort((left, right) => right.matchScore - left.matchScore)
+        .slice(0, 100);
+    } else {
+      papers = papers.sort((left, right) => (right.citations || 0) - (left.citations || 0)).slice(0, 100);
+    }
+
     db.close();
     
     return NextResponse.json({
@@ -83,7 +121,9 @@ export async function GET(request: Request) {
         pdfUrl: p.pdf_url,
         sources: parseJson(p.sources, []),
         sourceUrls: parseJson(p.source_urls, {}),
+        matchScore: p.matchScore,
       })),
+      searchMode,
     });
   } catch (error) {
     return NextResponse.json({ papers: [], error: String(error) }, { status: 500 });

@@ -35,9 +35,11 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [searchMode, setSearchMode] = useState("citations");
 
   useEffect(() => {
-    loadData();
+    const timer = window.setTimeout(loadData, search ? 300 : 0);
+    return () => window.clearTimeout(timer);
   }, [selected, search]);
 
   async function loadData() {
@@ -56,6 +58,7 @@ export default function Home() {
       const dirsData = await dirsRes.json();
       
       setPapers(papersData.papers || []);
+      setSearchMode(papersData.searchMode || "citations");
       setDirections(dirsData.directions || []);
     } catch (error) {
       console.error("Load error:", error);
@@ -156,6 +159,11 @@ export default function Home() {
               </p>
             </div>
             <div className="flex gap-2 text-sm">
+              {search && searchMode === "hybrid" && (
+                <span className="px-3 py-1 bg-blue-50 text-blue-700 rounded-full">
+                  语义 + 关键词
+                </span>
+              )}
               <span className="px-3 py-1 bg-green-50 text-green-700 rounded-full">
                 前沿: 1年内
               </span>
