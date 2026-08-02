@@ -62,7 +62,7 @@ export default function DailyRecommendations() {
   const [loading, setLoading] = useState(true);
   const [filterWindow, setFilterWindow] = useState("all");
   const [stats, setStats] = useState<RecommendationStats | null>(null);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     let active = true;
