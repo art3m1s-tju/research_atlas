@@ -30,7 +30,11 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
       if (content === null) return NextResponse.json({ error: "翻译文件不存在" }, { status: 404 });
       return new NextResponse(content, { headers: { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `inline; filename="${file}"` } });
     }
-    return NextResponse.json({ translation: row ? { ...row, translationUrl: row.status === "completed" ? `/api/papers/${encodeURIComponent(id)}/translation?file=translation_zh.md` : null } : null });
+    return NextResponse.json({ translation: row ? {
+      ...row,
+      previewUrl: row.status === "completed" ? `/papers/${encodeURIComponent(id)}/translation` : null,
+      markdownUrl: row.status === "completed" ? `/api/papers/${encodeURIComponent(id)}/translation?file=translation_zh.md` : null,
+    } : null });
   } finally { db.close(); }
 }
 

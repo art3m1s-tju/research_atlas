@@ -37,7 +37,7 @@ type RelatedPaper = {
 };
 
 type EvidenceItem = { type: string; label: string; content: string; source: string; confidence: string };
-type TranslationState = { status: "pending" | "running" | "completed" | "failed"; source_url?: string | null; error?: string | null; translationUrl?: string | null; source_chars?: number; translated_chars?: number; updated_at?: string };
+type TranslationState = { status: "pending" | "running" | "completed" | "failed"; source_url?: string | null; error?: string | null; previewUrl?: string | null; markdownUrl?: string | null; source_chars?: number; translated_chars?: number; updated_at?: string };
 
 export default function PaperDetail({ id }: { id: string }) {
   const [paper, setPaper] = useState<Paper | null>(null);
@@ -178,7 +178,7 @@ export default function PaperDetail({ id }: { id: string }) {
             <h2 className="font-semibold text-indigo-900">中文翻译工作流</h2>
             <span className="text-xs text-indigo-700">{translation.status === "completed" ? "已完成" : translation.status === "failed" ? "失败" : translation.status === "running" ? "翻译中" : "排队中"}</span>
           </div>
-          {translation.status === "completed" && translation.translationUrl && <a href={translation.translationUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700">打开中文译文 Markdown</a>}
+          {translation.status === "completed" && translation.previewUrl && <div className="mt-2 flex flex-wrap gap-2"><a href={translation.previewUrl} className="inline-block rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700">打开中文译文预览</a>{translation.markdownUrl && <a href={translation.markdownUrl} className="inline-block rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-50">下载 Markdown</a>}</div>}
           {translation.status === "failed" && <p className="mt-2 text-xs leading-5 text-red-700">{translation.error || "翻译失败，请检查 DeepSeek 配置和 PDF 是否可访问。"}</p>}
           {(translation.status === "pending" || translation.status === "running") && <p className="mt-2 text-xs text-indigo-800">任务在后台执行，页面会自动刷新状态；长论文可能需要几分钟。</p>}
         </section>}

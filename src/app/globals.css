@@ -23,3 +23,38 @@
     color: var(--text-primary);
   }
 }
+
+.translation-prose {
+  color: #1f2937;
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+}
+
+.translation-prose h1,
+.translation-prose h2,
+.translation-prose h3,
+.translation-prose h4 {
+  color: #111827;
+  font-weight: 700;
+  line-height: 1.35;
+  margin: 2rem 0 0.75rem;
+}
+
+.translation-prose h1 { font-size: 1.8rem; }
+.translation-prose h2 { font-size: 1.45rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.35rem; }
+.translation-prose h3 { font-size: 1.2rem; }
+.translation-prose p { margin: 0.9rem 0; }
+.translation-prose ul,
+.translation-prose ol { margin: 0.9rem 0; padding-left: 1.5rem; }
+.translation-prose ul { list-style: disc; }
+.translation-prose ol { list-style: decimal; }
+.translation-prose li { margin: 0.35rem 0; }
+.translation-prose blockquote { border-left: 4px solid #818cf8; background: #eef2ff; color: #374151; margin: 1rem 0; padding: 0.75rem 1rem; }
+.translation-prose code { border-radius: 0.25rem; background: #f3f4f6; padding: 0.12rem 0.3rem; font-size: 0.9em; }
+.translation-prose pre { overflow-x: auto; border-radius: 0.6rem; background: #111827; color: #f9fafb; margin: 1rem 0; padding: 1rem; }
+.translation-prose pre code { background: transparent; padding: 0; }
+.translation-prose table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; margin: 1rem 0; }
+.translation-prose th,
+.translation-prose td { border: 1px solid #d1d5db; padding: 0.5rem 0.7rem; text-align: left; min-width: 7rem; }
+.translation-prose th { background: #f3f4f6; font-weight: 700; }
+.translation-prose img { max-width: 100%; height: auto; }
