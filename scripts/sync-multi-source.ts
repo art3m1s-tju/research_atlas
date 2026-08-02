@@ -1,6 +1,11 @@
 import Database from "better-sqlite3";
 import { existsSync, readFileSync } from "node:fs";
 import { isLikelyRelevant } from "../src/lib/relevance";
+import {
+  CLASSIC_SEEDS,
+  metadataForPaper,
+  normalizeTitle,
+} from "../src/lib/research-ranking";
 
 function loadLocalEnv() {
   const envPath = ".env.local";
@@ -50,8 +55,10 @@ type PaperRecord = {
   title: string;
   abstract: string;
   year: number | null;
+  publishedDate: string | null;
   venue: string;
   citations: number;
+  citationPercentile: number | null;
   authors: string;
   doi: string | null;
   pdfUrl: string | null;
@@ -67,10 +74,6 @@ const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(reso
 
 function normalizeDoi(doi: string | null) {
   return doi?.replace(/^https?:\/\/doi.org\//i, "").toLowerCase().trim() || null;
-}
-
-function normalizeTitle(title: string) {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 300);
 }
 
 function extractAbstract(index: Record<string, number[]> | null) {
@@ -109,9 +112,9 @@ async function fetchOpenAlex(query: string, directionKey: string, directionLabel
   }
   const params = new URLSearchParams({
     search: query,
-    per_page: "60",
-    sort: "cited_by_count:desc",
-    select: "id,title,authorships,publication_year,primary_location,cited_by_count,abstract_inverted_index,doi,locations",
+    per_page: "80",
+    sort: "publication_date:desc,relevance_score:desc",
+    select: "id,title,authorships,publication_year,publication_date,primary_location,cited_by_count,cited_by_percentile_year,abstract_inverted_index,doi,locations",
     api_key: OPENALEX_API_KEY,
   });
   try {
@@ -127,8 +130,10 @@ async function fetchOpenAlex(query: string, directionKey: string, directionLabel
         title: paper.title,
         abstract: extractAbstract(paper.abstract_inverted_index),
         year: paper.publication_year || null,
+        publishedDate: paper.publication_date || null,
         venue,
         citations: paper.cited_by_count || 0,
+        citationPercentile: paper.cited_by_percentile_year?.max || paper.cited_by_percentile_year?.min || null,
         authors,
         doi,
         pdfUrl: arxivLocation?.pdf_url || paper.locations?.find((location: any) => location.pdf_url)?.pdf_url || null,
@@ -173,8 +178,10 @@ async function fetchArxiv(query: string, directionKey: string, directionLabel: s
         title,
         abstract: summary,
         year: published ? new Date(published).getFullYear() : null,
+        publishedDate: published || null,
         venue: "arXiv",
         citations: 0,
+        citationPercentile: null,
         authors,
         doi: null,
         pdfUrl,
@@ -219,8 +226,10 @@ async function fetchSemanticScholar(query: string, directionKey: string, directi
         title: paper.title,
         abstract: paper.abstract || "",
         year: paper.year || null,
+        publishedDate: paper.publicationDate || (paper.year ? `${paper.year}-01-01` : null),
         venue: paper.venue || "",
         citations: paper.citationCount || 0,
+        citationPercentile: null,
         authors: (paper.authors || []).map((author: any) => author.name).join(", "),
         doi,
         pdfUrl: paper.openAccessPdf?.url || (arxivId ? `https://arxiv.org/pdf/${arxivId}.pdf` : null),
@@ -248,6 +257,9 @@ async function enrichCrossref(paper: PaperRecord): Promise<PaperRecord> {
       ...paper,
       title: paper.title || message.title?.[0] || "",
       year: paper.year || message.published?.["date-parts"]?.[0]?.[0] || null,
+      publishedDate: paper.publishedDate || (message.published?.["date-parts"]?.[0]
+        ? message.published["date-parts"][0].map((part: number) => String(part).padStart(2, "0")).join("-")
+        : null),
       venue: paper.venue || message["container-title"]?.[0] || "",
       sourceIds: { ...paper.sourceIds, crossref: paper.doi },
       sourceUrls: { ...paper.sourceUrls, Crossref: `https://doi.org/${paper.doi}` },
@@ -326,6 +338,15 @@ function ensureSchema(db: Database.Database) {
     summary_source_hash: "TEXT",
     summary_updated_at: "TEXT",
     is_relevant: "INTEGER NOT NULL DEFAULT 1",
+    published_date: "TEXT",
+    citation_percentile: "REAL",
+    venue_type: "TEXT NOT NULL DEFAULT 'unknown'",
+    venue_tier: "INTEGER NOT NULL DEFAULT 0",
+    is_frontier: "INTEGER NOT NULL DEFAULT 0",
+    is_classic: "INTEGER NOT NULL DEFAULT 0",
+    discovery_reason: "TEXT NOT NULL DEFAULT '方向相关'",
+    recommendation_score: "REAL NOT NULL DEFAULT 0",
+    last_seen_at: "TEXT",
   };
   for (const [column, type] of Object.entries(additions)) {
     if (!columns.has(column)) db.exec(`ALTER TABLE papers ADD COLUMN ${column} ${type}`);
@@ -373,13 +394,17 @@ function upsertPaper(
   const mergedIds = { ...currentIds, ...paper.sourceIds };
   const mergedUrls = { ...currentUrls, ...paper.sourceUrls };
   const canonicalId = paper.openalexId || existing?.openalex_id || (paper.doi ? `doi:${paper.doi}` : paper.arxivId ? `arxiv:${paper.arxivId}` : `title:${normalizeTitle(paper.title)}:${paper.year || "unknown"}`);
+  const publishedDate = existing?.published_date || paper.publishedDate || null;
+  const citationPercentile = existing?.citation_percentile || paper.citationPercentile || null;
   const values = {
     openalex_id: canonicalId,
     title: existing?.title && existing.title.length >= paper.title.length ? existing.title : paper.title,
     abstract: (existing?.abstract || "").length >= paper.abstract.length ? existing?.abstract || "" : paper.abstract,
     year: existing?.year || paper.year,
+    published_date: publishedDate,
     venue: existing?.venue && existing.venue !== "arXiv" ? existing.venue : paper.venue,
     citations: Math.max(existing?.citations || 0, paper.citations || 0),
+    citation_percentile: citationPercentile,
     authors: (existing?.authors || "").length >= paper.authors.length ? existing?.authors || "" : paper.authors,
     doi: existing?.doi || paper.doi,
     pdf_url: existing?.pdf_url || paper.pdfUrl,
@@ -394,14 +419,32 @@ function upsertPaper(
     source_urls: JSON.stringify(mergedUrls),
     is_relevant: 1,
   };
+  const metadata = metadataForPaper({
+    title: values.title,
+    year: values.year,
+    published_date: values.published_date,
+    venue: values.venue,
+    publication_channel: values.publication_channel,
+    citations: values.citations,
+    citation_percentile: values.citation_percentile,
+  });
+  Object.assign(values, {
+    venue_type: metadata.venueType,
+    venue_tier: metadata.venueTier,
+    is_frontier: metadata.isFrontier ? 1 : 0,
+    is_classic: metadata.isClassic ? 1 : 0,
+    discovery_reason: metadata.discoveryReason,
+    recommendation_score: metadata.recommendationScore,
+    last_seen_at: new Date().toISOString(),
+  });
   if (existing) {
-    db.prepare(`UPDATE papers SET title=@title, abstract=@abstract, year=@year, venue=@venue, citations=@citations, authors=@authors, doi=@doi, pdf_url=@pdf_url, direction=@direction, direction_label=@direction_label, publication_channel=@publication_channel, arxiv_id=@arxiv_id, semantic_scholar_id=@semantic_scholar_id, normalized_title=@normalized_title, sources=@sources, source_ids=@source_ids, source_urls=@source_urls, is_relevant=@is_relevant, updated_at=CURRENT_TIMESTAMP WHERE id=@id`).run({ ...values, id: existing.id });
+    db.prepare(`UPDATE papers SET title=@title, abstract=@abstract, year=@year, published_date=@published_date, venue=@venue, citations=@citations, citation_percentile=@citation_percentile, authors=@authors, doi=@doi, pdf_url=@pdf_url, direction=@direction, direction_label=@direction_label, publication_channel=@publication_channel, venue_type=@venue_type, venue_tier=@venue_tier, is_frontier=@is_frontier, is_classic=@is_classic, discovery_reason=@discovery_reason, recommendation_score=@recommendation_score, last_seen_at=@last_seen_at, arxiv_id=@arxiv_id, semantic_scholar_id=@semantic_scholar_id, normalized_title=@normalized_title, sources=@sources, source_ids=@source_ids, source_urls=@source_urls, is_relevant=@is_relevant, updated_at=CURRENT_TIMESTAMP WHERE id=@id`).run({ ...values, id: existing.id });
     return {
       id: existing.id as number,
       needsEmbedding: !existing.embedding || existing.embedding_model !== embeddingModel,
     };
   } else {
-    db.prepare(`INSERT OR IGNORE INTO papers (openalex_id,title,abstract,year,venue,citations,authors,doi,pdf_url,direction,direction_label,publication_channel,arxiv_id,semantic_scholar_id,normalized_title,sources,source_ids,source_urls,is_relevant) VALUES (@openalex_id,@title,@abstract,@year,@venue,@citations,@authors,@doi,@pdf_url,@direction,@direction_label,@publication_channel,@arxiv_id,@semantic_scholar_id,@normalized_title,@sources,@source_ids,@source_urls,@is_relevant)`).run(values);
+    db.prepare(`INSERT OR IGNORE INTO papers (openalex_id,title,abstract,year,published_date,venue,citations,citation_percentile,authors,doi,pdf_url,direction,direction_label,publication_channel,venue_type,venue_tier,is_frontier,is_classic,discovery_reason,recommendation_score,last_seen_at,arxiv_id,semantic_scholar_id,normalized_title,sources,source_ids,source_urls,is_relevant) VALUES (@openalex_id,@title,@abstract,@year,@published_date,@venue,@citations,@citation_percentile,@authors,@doi,@pdf_url,@direction,@direction_label,@publication_channel,@venue_type,@venue_tier,@is_frontier,@is_classic,@discovery_reason,@recommendation_score,@last_seen_at,@arxiv_id,@semantic_scholar_id,@normalized_title,@sources,@source_ids,@source_urls,@is_relevant)`).run(values);
     const inserted = findExisting(db, paper);
     return { id: inserted.id as number, needsEmbedding: true };
   }
@@ -418,6 +461,53 @@ async function main() {
   ];
   let totalFetched = 0;
   let embeddingUnavailable = false;
+
+  const saveEmbeddingIfNeeded = async (
+    paper: PaperRecord,
+    upserted: { id: number; needsEmbedding: boolean },
+  ) => {
+    if (!upserted.needsEmbedding || embeddingUnavailable) return;
+    try {
+      const embedding = await embedText(paperEmbeddingText(paper));
+      db.prepare("UPDATE papers SET embedding = ?, embedding_model = ? WHERE id = ?")
+        .run(JSON.stringify(embedding), EMBEDDING_MODEL, upserted.id);
+    } catch (error) {
+      embeddingUnavailable = true;
+      console.error(`  语义向量暂不可用，将继续保存论文数据: ${error instanceof Error ? error.message : error}`);
+    }
+  };
+
+  const builtinDirections = new Map(
+    Object.entries(BUILTIN_QUERIES).map(([key]) => [key, { key, label: key }]),
+  );
+  for (const seed of CLASSIC_SEEDS) {
+    for (const directionKey of seed.directions) {
+      const direction = builtinDirections.get(directionKey);
+      if (!direction) continue;
+      const record: PaperRecord = {
+        title: seed.title,
+        abstract: "",
+        year: seed.year,
+        publishedDate: `${seed.year}-01-01`,
+        venue: seed.venue,
+        citations: 0,
+        citationPercentile: null,
+        authors: "",
+        doi: seed.doi || null,
+        pdfUrl: seed.arxivId ? `https://arxiv.org/pdf/${seed.arxivId}.pdf` : null,
+        openalexId: null,
+        arxivId: seed.arxivId || null,
+        semanticScholarId: null,
+        sources: ["Curated classics"],
+        sourceIds: seed.arxivId ? { arxiv: seed.arxivId } : {},
+        sourceUrls: seed.arxivId ? { arXiv: `https://arxiv.org/abs/${seed.arxivId}` } : {},
+      };
+      const upserted = upsertPaper(db, record, direction, EMBEDDING_MODEL);
+      await saveEmbeddingIfNeeded(record, upserted);
+      totalFetched += 1;
+    }
+  }
+
   for (const direction of directions) {
     console.log(`\n📚 ${direction.label} (${direction.key})`);
     const records = [
@@ -434,16 +524,7 @@ async function main() {
     for (const record of deduped.values()) {
       const enriched = await enrichUnpaywall(await enrichCrossref(record));
       const upserted = upsertPaper(db, enriched, direction, EMBEDDING_MODEL);
-      if (upserted.needsEmbedding && !embeddingUnavailable) {
-        try {
-          const embedding = await embedText(paperEmbeddingText(enriched));
-          db.prepare("UPDATE papers SET embedding = ?, embedding_model = ? WHERE id = ?")
-            .run(JSON.stringify(embedding), EMBEDDING_MODEL, upserted.id);
-        } catch (error) {
-          embeddingUnavailable = true;
-          console.error(`  语义向量暂不可用，将继续保存论文数据: ${error instanceof Error ? error.message : error}`);
-        }
-      }
+      await saveEmbeddingIfNeeded(enriched, upserted);
       totalFetched += 1;
     }
     console.log(`  ✓ ${deduped.size} records merged`);

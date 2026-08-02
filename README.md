@@ -5,7 +5,9 @@
 ## 当前能力
 
 - 多数据源论文同步：OpenAlex、arXiv、Crossref、Unpaywall；Semantic Scholar 可选
-- 按方向筛选、全文搜索、引用量排序
+- 按方向筛选、全文搜索，默认以前沿优先的推荐分数排序
+- 前沿论文、经典必读、我的推荐三种阅读视图
+- 识别顶会/顶刊、预印本、经典论文和同年份高影响论文
 - 支持新增自定义方向，例如“自动驾驶幻觉控制”
 - 保留 DOI、PDF、数据源链接，并按 DOI、arXiv ID、Semantic Scholar ID 和标题年份去重
 - 论文卡片显示来源和引用量
@@ -54,7 +56,7 @@ TRANSFORMERS_CACHE=./.cache/transformers
 说明：
 
 - arXiv 不需要注册或 API Key，但它不提供引用量，因此纯 arXiv 记录可能显示“暂无数据”。
-- OpenAlex Key 启用后，论文会获得引用量并按引用量排序。
+- OpenAlex Key 启用后，论文会获得引用量、发表日期和同年份引用百分位；系统不会单纯按总引用量排序。
 - 语义检索使用本地多语言 embedding 模型；首次同步会下载模型，之后复用本地缓存。
 - Crossref 用于 DOI、期刊/会议元数据校正。
 - Unpaywall 用于寻找合法开放获取 PDF。
@@ -89,7 +91,9 @@ npm run summarize:papers
 ./scripts/sync-daily.sh
 ```
 
-同步过程会合并不同数据源的同一篇论文，并保留更高的引用量、更完整的摘要和可用 PDF。新增方向后，再运行一次 `npm run sync:full` 即可抓取该方向的论文。
+同步过程会合并不同数据源的同一篇论文，并保留更高的引用量、更完整的摘要和可用 PDF。OpenAlex 和 arXiv 优先抓取最新候选，之后按照方向相关性、时间、会议质量和同年份影响力重新排序。新增方向后，再运行一次 `npm run sync:full` 即可抓取该方向的论文。
+
+系统内置少量经典必读种子，例如 Attention Is All You Need、BEVFormer、VectorNet、Trajectron++ 和 UniAD。经典论文由可维护的种子清单控制，不会把所有老论文或高引用论文都误标成经典；可在 `src/lib/research-ranking.ts` 中补充或调整。
 
 同步器会对自动驾驶、车辆、机器人、规划、控制、感知等领域锚点做相关性过滤。已有数据库可以运行下面的命令隐藏明显不相关论文；该操作只做标记，不删除原始记录：
 
@@ -110,7 +114,7 @@ npm run clean:relevance
 
 ## API
 
-- `GET /api/papers`：论文列表，支持 `direction` 和 `search` 参数
+- `GET /api/papers`：论文列表，支持 `direction`、`search` 和 `view=recommended|frontier|classic` 参数
 - `GET /api/directions`：方向和论文数量
 - `POST /api/directions`：新增自定义方向
 - `POST /api/sync`：执行多源同步

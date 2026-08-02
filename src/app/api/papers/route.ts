@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
 import { cosineSimilarity, lexicalScore, parseEmbedding } from "@/lib/semantic-search";
+import { metadataForPaper } from "@/lib/research-ranking";
 
 const DB_PATH = path.join(process.cwd(), "data", "atlas.db");
 
@@ -37,16 +38,64 @@ function ensureEmbeddingSchema(db: Database.Database) {
   if (!columns.has("summary_source_hash")) db.exec("ALTER TABLE papers ADD COLUMN summary_source_hash TEXT");
   if (!columns.has("summary_updated_at")) db.exec("ALTER TABLE papers ADD COLUMN summary_updated_at TEXT");
   if (!columns.has("is_relevant")) db.exec("ALTER TABLE papers ADD COLUMN is_relevant INTEGER NOT NULL DEFAULT 1");
+  if (!columns.has("published_date")) db.exec("ALTER TABLE papers ADD COLUMN published_date TEXT");
+  if (!columns.has("citation_percentile")) db.exec("ALTER TABLE papers ADD COLUMN citation_percentile REAL");
+  if (!columns.has("venue_type")) db.exec("ALTER TABLE papers ADD COLUMN venue_type TEXT NOT NULL DEFAULT 'unknown'");
+  if (!columns.has("venue_tier")) db.exec("ALTER TABLE papers ADD COLUMN venue_tier INTEGER NOT NULL DEFAULT 0");
+  if (!columns.has("is_frontier")) db.exec("ALTER TABLE papers ADD COLUMN is_frontier INTEGER NOT NULL DEFAULT 0");
+  if (!columns.has("is_classic")) db.exec("ALTER TABLE papers ADD COLUMN is_classic INTEGER NOT NULL DEFAULT 0");
+  if (!columns.has("discovery_reason")) db.exec("ALTER TABLE papers ADD COLUMN discovery_reason TEXT NOT NULL DEFAULT '方向相关'");
+  if (!columns.has("recommendation_score")) db.exec("ALTER TABLE papers ADD COLUMN recommendation_score REAL NOT NULL DEFAULT 0");
+  if (!columns.has("last_seen_at")) db.exec("ALTER TABLE papers ADD COLUMN last_seen_at TEXT");
+}
+
+function refreshRecommendationMetadata(db: Database.Database) {
+  const papers = db.prepare(`
+    SELECT id, title, year, published_date, venue, publication_channel, citations, citation_percentile
+    FROM papers
+  `).all() as Array<{
+    id: number;
+    title: string;
+    year: number | null;
+    published_date: string | null;
+    venue: string | null;
+    publication_channel: string | null;
+    citations: number | null;
+    citation_percentile: number | null;
+  }>;
+  const update = db.prepare(`
+    UPDATE papers
+    SET venue_type = ?, venue_tier = ?, is_frontier = ?, is_classic = ?,
+        discovery_reason = ?, recommendation_score = ?
+    WHERE id = ?
+  `);
+  const transaction = db.transaction(() => {
+    for (const paper of papers) {
+      const metadata = metadataForPaper(paper);
+      update.run(
+        metadata.venueType,
+        metadata.venueTier,
+        metadata.isFrontier ? 1 : 0,
+        metadata.isClassic ? 1 : 0,
+        metadata.discoveryReason,
+        metadata.recommendationScore,
+        paper.id,
+      );
+    }
+  });
+  transaction();
 }
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const direction = searchParams.get("direction") || "all";
   const search = searchParams.get("search") || "";
+  const view = searchParams.get("view") || "recommended";
 
   try {
     const db = new Database(DB_PATH);
     ensureEmbeddingSchema(db);
+    refreshRecommendationMetadata(db);
     db.exec(`
       CREATE TABLE IF NOT EXISTS custom_directions (
         key TEXT PRIMARY KEY,
@@ -74,12 +123,14 @@ export async function GET(request: Request) {
       params.push(direction);
     }
     conditions.push("(is_relevant IS NULL OR is_relevant != 0)");
+    if (view === "frontier") conditions.push("is_frontier = 1");
+    if (view === "classic") conditions.push("is_classic = 1");
     if (conditions.length > 0) {
       query += " WHERE " + conditions.join(" AND ");
     }
 
     let papers = db.prepare(query).all(...params) as any[];
-    let searchMode = "citations";
+    let searchMode = "recommended";
     if (search.trim()) {
       let queryEmbedding: number[] | null = null;
       try {
@@ -100,17 +151,24 @@ export async function GET(request: Request) {
             ? Math.max(0, cosineSimilarity(queryEmbedding, parseEmbedding(paper.embedding) || []))
             : 0;
           const lexical = lexicalScore(text, search);
-          const citation = Math.min(Math.log10((paper.citations || 0) + 1) / 4, 1);
+          const recommendation = Math.min(Math.max(Number(paper.recommendation_score || 0), 0), 1);
           const score = queryEmbedding
-            ? semantic * 0.7 + lexical * 0.2 + citation * 0.1
-            : lexical * 0.8 + citation * 0.2;
+            ? semantic * 0.6 + lexical * 0.25 + recommendation * 0.15
+            : lexical * 0.8 + recommendation * 0.2;
           return { ...paper, matchScore: score };
         })
         .filter((paper) => paper.matchScore > 0)
         .sort((left, right) => right.matchScore - left.matchScore)
         .slice(0, 100);
     } else {
-      papers = papers.sort((left, right) => (right.citations || 0) - (left.citations || 0)).slice(0, 100);
+      papers = papers
+        .sort((left, right) =>
+          (right.recommendation_score || 0) - (left.recommendation_score || 0)
+          || (right.is_frontier || 0) - (left.is_frontier || 0)
+          || (right.year || 0) - (left.year || 0)
+          || (right.citations || 0) - (left.citations || 0)
+        )
+        .slice(0, 100);
     }
 
     db.close();
@@ -123,6 +181,7 @@ export async function GET(request: Request) {
         year: p.year,
         venue: p.venue || "",
         citations: p.citations || 0,
+        citationPercentile: p.citation_percentile || null,
         abstract: p.abstract || "",
         direction: p.direction,
         directionLabel: directionMeta[p.direction]?.label || p.direction,
@@ -138,6 +197,12 @@ export async function GET(request: Request) {
         resultsZh: p.results_zh || null,
         limitationsZh: p.limitations_zh || null,
         publicationChannel: p.publication_channel || (p.venue === "arXiv" ? "arXiv 预印本" : "同行评议渠道待核实"),
+        venueType: p.venue_type || "unknown",
+        venueTier: p.venue_tier || 0,
+        isFrontier: Boolean(p.is_frontier),
+        isClassic: Boolean(p.is_classic),
+        discoveryReason: p.discovery_reason || "方向相关",
+        recommendationScore: p.recommendation_score || 0,
       })),
       searchMode,
     });

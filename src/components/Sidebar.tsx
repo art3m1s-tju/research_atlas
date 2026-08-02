@@ -138,7 +138,7 @@ export default function Sidebar({
           <div>
             <h3 className="text-sm font-medium text-gray-900 mb-1">阅读约定</h3>
             <p className="text-xs text-gray-600 leading-relaxed">
-              论文数据来自 OpenAlex，按引用量排序。每日自动更新。
+              前沿论文优先，经典论文单独标记。数据来自 OpenAlex、arXiv 等来源，可随时同步更新。
             </p>
           </div>
         </div>

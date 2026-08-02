@@ -19,6 +19,19 @@ interface Paper {
   directionColor?: string;
   sources?: string[];
   sourceUrls?: Record<string, string>;
+  citationPercentile?: number | null;
+  venueType?: string;
+  venueTier?: number;
+  isFrontier?: boolean;
+  isClassic?: boolean;
+  discoveryReason?: string;
+  recommendationScore?: number;
+  summaryZh?: string | null;
+  innovationsZh?: string[];
+  methodZh?: string | null;
+  resultsZh?: string | null;
+  limitationsZh?: string | null;
+  publicationChannel?: string;
 }
 
 interface Direction {
@@ -40,14 +53,15 @@ export default function Home() {
   const [databaseStats, setDatabaseStats] = useState<DatabaseStats | null>(null);
   const [selected, setSelected] = useState("all");
   const [search, setSearch] = useState("");
+  const [view, setView] = useState("recommended");
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [searchMode, setSearchMode] = useState("citations");
+  const [searchMode, setSearchMode] = useState("recommended");
 
   useEffect(() => {
     const timer = window.setTimeout(loadData, search ? 300 : 0);
     return () => window.clearTimeout(timer);
-  }, [selected, search]);
+  }, [selected, search, view]);
 
   async function loadData() {
     setLoading(true);
@@ -55,6 +69,7 @@ export default function Home() {
       const params = new URLSearchParams();
       if (selected !== "all") params.set("direction", selected);
       if (search) params.set("search", search);
+      params.set("view", view);
       
       const [papersRes, dirsRes] = await Promise.all([
         fetch(`/api/papers?${params}`),
@@ -104,7 +119,8 @@ export default function Home() {
 
   const currentDir = directions.find(d => d.key === selected);
   const currentLabel = currentDir?.label || "全部方向";
-  const currentCount = currentDir?.count || papers.length;
+  const currentCount = view === "recommended" && !search ? currentDir?.count || papers.length : papers.length;
+  const viewLabel = view === "frontier" ? "前沿论文" : view === "classic" ? "经典必读" : "我的推荐";
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -163,7 +179,7 @@ export default function Home() {
             <div>
               <h2 className="text-xl font-semibold text-gray-900">{currentLabel}</h2>
               <p className="text-sm text-gray-600 mt-1">
-                {loading ? "加载中..." : `${currentCount} 篇论文`}
+                {loading ? "加载中..." : `${currentCount} 篇 · ${viewLabel}`}
               </p>
               {!loading && databaseStats && (
                 <p className="mt-1 text-xs text-gray-400">
@@ -177,13 +193,30 @@ export default function Home() {
                   语义 + 关键词
                 </span>
               )}
-              <span className="px-3 py-1 bg-green-50 text-green-700 rounded-full">
-                前沿: 1年内
-              </span>
-              <span className="px-3 py-1 bg-orange-50 text-orange-700 rounded-full">
-                高引: 100+ 引用
-              </span>
             </div>
+          </div>
+
+          <div className="mb-6 flex flex-wrap gap-2">
+            {[
+              { key: "recommended", label: "我的推荐", hint: "前沿优先" },
+              { key: "frontier", label: "前沿论文", hint: "近两年" },
+              { key: "classic", label: "经典必读", hint: "基础锚点" },
+            ].map((item) => (
+              <button
+                key={item.key}
+                onClick={() => setView(item.key)}
+                className={`rounded-lg border px-4 py-2 text-sm transition-colors ${
+                  view === item.key
+                    ? "border-blue-600 bg-blue-600 text-white"
+                    : "border-gray-200 bg-white text-gray-700 hover:border-blue-300 hover:bg-blue-50"
+                }`}
+              >
+                {item.label}
+                <span className={`ml-2 text-xs ${view === item.key ? "text-blue-100" : "text-gray-400"}`}>
+                  {item.hint}
+                </span>
+              </button>
+            ))}
           </div>
 
           {/* Papers Grid */}

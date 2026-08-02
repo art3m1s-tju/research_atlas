@@ -13,6 +13,13 @@ interface Paper {
   directionColor?: string;
   sources?: string[];
   sourceUrls?: Record<string, string>;
+  citationPercentile?: number | null;
+  venueType?: string;
+  venueTier?: number;
+  isFrontier?: boolean;
+  isClassic?: boolean;
+  discoveryReason?: string;
+  recommendationScore?: number;
   summaryZh?: string | null;
   innovationsZh?: string[];
   methodZh?: string | null;
@@ -38,8 +45,12 @@ export default function PaperCard({ paper }: { paper: Paper }) {
   const dir = paper.directionLabel
     ? { label: paper.directionLabel, color: paper.directionColor || "#64748b" }
     : DIRECTION_LABELS[paper.direction];
-  const isRecent = paper.year && new Date().getFullYear() - paper.year <= 1;
-  const isHot = paper.citations > 100;
+  const isRecent = paper.isFrontier ?? (paper.year && new Date().getFullYear() - paper.year <= 1);
+  const isTopVenue = (paper.venueTier || 0) >= 3;
+  const citationPercentile = (paper.citationPercentile || 0) > 1
+    ? (paper.citationPercentile || 0) / 100
+    : (paper.citationPercentile || 0);
+  const isHighImpactForAge = citationPercentile >= 0.9;
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
@@ -52,14 +63,24 @@ export default function PaperCard({ paper }: { paper: Paper }) {
             {dir.label}
           </span>
         )}
-        {isRecent && (
+        {paper.isClassic && (
+          <span className="px-2 py-1 bg-amber-50 text-amber-700 text-xs rounded-full font-medium">
+            经典必读
+          </span>
+        )}
+        {isRecent && !paper.isClassic && (
           <span className="px-2 py-1 bg-green-50 text-green-700 text-xs rounded-full font-medium">
             前沿
           </span>
         )}
-        {isHot && (
+        {isTopVenue && (
+          <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded-full font-medium">
+            顶会/顶刊
+          </span>
+        )}
+        {isHighImpactForAge && !isTopVenue && (
           <span className="px-2 py-1 bg-orange-50 text-orange-700 text-xs rounded-full font-medium">
-            高引
+            同年份高影响
           </span>
         )}
       </div>
@@ -81,6 +102,10 @@ export default function PaperCard({ paper }: { paper: Paper }) {
           </>
         )}
       </div>
+
+      {paper.discoveryReason && (
+        <div className="mb-3 text-xs text-slate-500">推荐理由：{paper.discoveryReason}</div>
+      )}
 
       {paper.sources && paper.sources.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-3">
