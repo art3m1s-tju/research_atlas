@@ -9,11 +9,19 @@ function parseJson(value: string | null, fallback: any) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 }
 
+function ensureAbstractTranslationColumns(db: Database.Database) {
+  const columns = new Set((db.prepare("PRAGMA table_info(papers)").all() as { name: string }[]).map((column) => column.name));
+  for (const [name, type] of Object.entries({ abstract_zh: "TEXT", abstract_translation_model: "TEXT", abstract_translation_source_hash: "TEXT" })) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE papers ADD COLUMN ${name} ${type}`);
+  }
+}
+
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const db = new Database(DB_PATH);
   try {
     ensureUserStateSchema(db);
+    ensureAbstractTranslationColumns(db);
     const paper = db.prepare("SELECT * FROM papers WHERE openalex_id = ?").get(decodeURIComponent(id)) as any;
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
     const directions = db.prepare(`
@@ -34,6 +42,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
         venue: paper.venue || "",
         citations: paper.citations || 0,
         abstract: paper.abstract || "",
+        abstractZh: paper.abstract_zh || null,
         doi: paper.doi,
         pdfUrl: paper.pdf_url,
         sources: parseJson(paper.sources, []),

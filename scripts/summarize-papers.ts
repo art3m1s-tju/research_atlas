@@ -25,6 +25,9 @@ type Paper = {
   doi: string | null;
   summary_model: string | null;
   summary_source_hash: string | null;
+  abstract_zh: string | null;
+  abstract_translation_model: string | null;
+  abstract_translation_source_hash: string | null;
 };
 
 type Summary = {
@@ -33,6 +36,7 @@ type Summary = {
   method_zh: string;
   results_zh: string;
   limitations_zh: string;
+  abstract_zh: string;
 };
 
 loadLocalEnv();
@@ -56,6 +60,9 @@ function ensureSchema(db: Database.Database) {
     summary_model: "TEXT",
     summary_source_hash: "TEXT",
     summary_updated_at: "TEXT",
+    abstract_zh: "TEXT",
+    abstract_translation_model: "TEXT",
+    abstract_translation_source_hash: "TEXT",
     is_relevant: "INTEGER NOT NULL DEFAULT 1",
   };
   for (const [column, type] of Object.entries(additions)) {
@@ -74,6 +81,7 @@ function paperPrompt(paper: Paper) {
 
 输出格式必须严格是：
 {
+  "abstract_zh": "对英文摘要的完整中文翻译，不要压缩，不要添加摘要中没有的信息",
   "summary_zh": "100字以内的中文速览，说明问题、方法和主要结论",
   "innovations_zh": ["核心创新点1", "核心创新点2"],
   "method_zh": "方法概述",
@@ -95,6 +103,7 @@ function normalizeSummary(value: unknown): Summary {
     ? data.innovations_zh.filter((item): item is string => typeof item === "string").slice(0, 3)
     : [];
   return {
+    abstract_zh: typeof data.abstract_zh === "string" ? data.abstract_zh.trim() : "摘要未说明",
     summary_zh: typeof data.summary_zh === "string" ? data.summary_zh.trim() : "摘要未说明",
     innovations_zh: innovations.length ? innovations : ["摘要未说明"],
     method_zh: typeof data.method_zh === "string" ? data.method_zh.trim() : "摘要未说明",
@@ -157,13 +166,13 @@ async function main() {
   const db = new Database(process.env.DATABASE_PATH || "./data/atlas.db");
   ensureSchema(db);
   const allPapers = db.prepare(`
-    SELECT id, title, abstract, authors, year, venue, doi, summary_model, summary_source_hash
+    SELECT id, title, abstract, authors, year, venue, doi, summary_model, summary_source_hash, abstract_zh, abstract_translation_model, abstract_translation_source_hash
     FROM papers
     WHERE is_relevant IS NULL OR is_relevant != 0
     ORDER BY citations DESC, year DESC
   `).all() as Paper[];
   const papers = allPapers
-    .filter((paper) => paper.summary_model !== MODEL || paper.summary_source_hash !== sourceHash(paper))
+    .filter((paper) => paper.summary_model !== MODEL || paper.summary_source_hash !== sourceHash(paper) || !paper.abstract_zh || paper.abstract_translation_model !== MODEL || paper.abstract_translation_source_hash !== sourceHash(paper))
     .slice(0, LIMIT > 0 ? LIMIT : undefined);
 
   console.log(`准备生成 ${papers.length} 篇中文论文解读，模型=${MODEL}，并发=${CONCURRENCY}`);
@@ -171,8 +180,9 @@ async function main() {
   let failed = 0;
   const update = db.prepare(`
     UPDATE papers
-    SET summary_zh = ?, innovations_zh = ?, method_zh = ?, results_zh = ?, limitations_zh = ?,
-        summary_model = ?, summary_source_hash = ?, summary_updated_at = CURRENT_TIMESTAMP
+    SET abstract_zh = ?, summary_zh = ?, innovations_zh = ?, method_zh = ?, results_zh = ?, limitations_zh = ?,
+        summary_model = ?, summary_source_hash = ?, summary_updated_at = CURRENT_TIMESTAMP,
+        abstract_translation_model = ?, abstract_translation_source_hash = ?
     WHERE id = ?
   `);
   let cursor = 0;
@@ -184,11 +194,14 @@ async function main() {
       try {
         const summary = await generateSummary(paper);
         update.run(
+          summary.abstract_zh,
           summary.summary_zh,
           JSON.stringify(summary.innovations_zh),
           summary.method_zh,
           summary.results_zh,
           summary.limitations_zh,
+          MODEL,
+          sourceHash(paper),
           MODEL,
           sourceHash(paper),
           paper.id,

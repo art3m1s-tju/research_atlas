@@ -21,6 +21,7 @@
 - 保留 DOI、PDF、数据源链接，并按 DOI、arXiv ID、Semantic Scholar ID 和标题年份去重
 - 论文卡片显示来源和引用量
 - 可选生成中文速览、核心创新点、方法和关键结果
+- 论文详情页同时显示英文摘要和中文摘要；中文摘要按原文完整翻译并按论文内容缓存
 - 支持论文详情、收藏、已读、不感兴趣和个人笔记
 - OpenAlex 全网搜索后可直接收藏到 Atlas；收藏时用 DeepSeek 自动推荐研究方向
 - 分类结果按论文内容哈希缓存；现有方向自动归档，未知方向只提出新建建议并等待确认
@@ -115,6 +116,7 @@ SYNC_REQUEST_RETRIES=2
 - DeepSeek 配置后，`summarize:papers` 会用 `deepseek-v4-flash` 批量生成中文论文解读；默认并发 8，可通过 `SUMMARY_CONCURRENCY` 调整。
 - 新论文收藏后的分类使用 `DEEPSEEK_CLASSIFIER_MODEL`，默认 `deepseek-v4-flash`。分类 prompt 要求模型只能选择 Atlas 当前方向的 key，并根据标题、摘要和发表渠道判断；无法匹配时返回新方向名称和检索词建议。分类结果写入 `paper_classifications`，论文内容没有变化时不会重复调用模型。
 - 如果暂时没有配置 `DEEPSEEK_API_KEY`，收藏流程会退回本地关键词规则并明确标注，不会伪造 DeepSeek 结果。论文详情页也可以手动点击“DeepSeek 分类”重试。
+- 中文摘要与中文速览分开保存：中文摘要是英文摘要的忠实翻译，中文速览是压缩后的阅读提示。详情页缺少中文摘要时可点击“生成中文摘要”；成功结果写入 SQLite，后续不会重复调用。
 - Zotero 建议先导出 BibTeX，再在网页左侧“导入 Zotero/BibTeX”；导入的论文会作为兴趣样本参与后续推荐。
 - 详情页的“尝试解析 PDF 全文”使用本机 `pdftotext` 提取开放 PDF；没有 PDF 或解析失败时会回退到摘要级证据。
 - `DIGEST_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID` 都是可选配置；不配置时只生成本地 Markdown，不会发送外部消息。

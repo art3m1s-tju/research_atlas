@@ -12,6 +12,7 @@ type Paper = {
   venue: string;
   citations: number;
   abstract: string;
+  abstractZh: string | null;
   doi: string | null;
   pdfUrl: string | null;
   directions: { key: string; label: string }[];
@@ -55,6 +56,7 @@ export default function PaperDetail({ id }: { id: string }) {
   const [creatingDirection, setCreatingDirection] = useState(false);
   const [translation, setTranslation] = useState<TranslationState | null>(null);
   const [translationStarting, setTranslationStarting] = useState(false);
+  const [abstractTranslating, setAbstractTranslating] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -144,6 +146,18 @@ export default function PaperDetail({ id }: { id: string }) {
     } finally { setTranslationStarting(false); }
   }
 
+  async function translateAbstract() {
+    setAbstractTranslating(true);
+    try {
+      const response = await fetch(`/api/papers/${encodeURIComponent(id)}/abstract-translation`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "中文摘要生成失败");
+      setPaper((current) => current ? { ...current, abstractZh: data.abstractZh } : current);
+    } catch (error) {
+      setClassificationMessage(error instanceof Error ? error.message : "中文摘要生成失败");
+    } finally { setAbstractTranslating(false); }
+  }
+
   if (loading) return <main className="mx-auto max-w-4xl p-8 text-gray-500">加载论文中...</main>;
   if (!paper) return <main className="mx-auto max-w-4xl p-8 text-red-600">论文不存在</main>;
 
@@ -184,7 +198,8 @@ export default function PaperDetail({ id }: { id: string }) {
         </section>}
 
         {paper.summaryZh && <section className="mt-8 rounded-lg bg-amber-50 p-5"><h2 className="font-semibold text-amber-900">中文速览</h2><p className="mt-2 leading-7 text-gray-800">{paper.summaryZh}</p></section>}
-        <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">摘要</h2><p className="mt-3 whitespace-pre-wrap leading-7 text-gray-700">{paper.abstract || "暂无摘要"}</p></section>
+        <section className="mt-8 rounded-xl border border-blue-100 bg-blue-50/60 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-xl font-semibold text-gray-900">中文摘要</h2>{!paper.abstractZh && paper.abstract && <button type="button" onClick={translateAbstract} disabled={abstractTranslating} className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50">{abstractTranslating ? "生成中..." : "生成中文摘要"}</button>}</div><p className="mt-3 whitespace-pre-wrap leading-7 text-gray-700">{paper.abstractZh || "中文摘要尚未生成。"}</p></section>
+        <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">英文摘要</h2><p className="mt-3 whitespace-pre-wrap leading-7 text-gray-700">{paper.abstract || "暂无摘要"}</p></section>
         {paper.innovationsZh.length > 0 && <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">核心创新</h2><ul className="mt-3 list-disc space-y-2 pl-6 text-gray-700">{paper.innovationsZh.map((item) => <li key={item}>{item}</li>)}</ul></section>}
         {paper.methodZh && <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">方法</h2><p className="mt-3 leading-7 text-gray-700">{paper.methodZh}</p></section>}
         {paper.resultsZh && <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">实验结果</h2><p className="mt-3 leading-7 text-gray-700">{paper.resultsZh}</p></section>}
