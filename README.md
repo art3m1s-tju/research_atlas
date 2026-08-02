@@ -17,10 +17,12 @@
 
 ```bash
 npm install
-cp .env.example .env.local
+[ -f .env.local ] || cp .env.example .env.local
 npm run sync:full
 npm run dev -- --port 3100
 ```
+
+如果 `.env.local` 已经存在，请不要再次执行 `cp .env.example .env.local`，否则会覆盖本地 API Key；直接编辑现有文件即可。
 
 打开 <http://localhost:3100>。
 
