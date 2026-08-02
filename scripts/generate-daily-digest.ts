@@ -7,7 +7,7 @@ const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "a
 const OUTPUT_PATH = process.env.DIGEST_OUTPUT_PATH || path.join(process.cwd(), "data", "daily-digest.md");
 
 async function getRecommendations() {
-  const baseUrl = process.env.DIGEST_BASE_URL || "http://127.0.0.1:3100";
+  const baseUrl = process.env.DIGEST_BASE_URL || "http://127.0.0.1:3210";
   try {
     const response = await fetch(`${baseUrl}/api/daily-recommendations?limit=2&window=all`, { signal: AbortSignal.timeout(8000) });
     if (response.ok) return await response.json();

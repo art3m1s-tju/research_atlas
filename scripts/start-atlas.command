@@ -8,13 +8,9 @@ export NODE_USE_ENV_PROXY="${NODE_USE_ENV_PROXY:-1}"
 ROOT_DIR="${0:A:h:h}"
 cd "$ROOT_DIR"
 
-PORT="${ATLAS_PORT:-3100}"
-URL="http://localhost:${PORT}"
-
 echo "AI Research Atlas"
 echo "================="
 echo "项目目录: $ROOT_DIR"
-echo "访问地址: $URL"
 echo
 
 if [[ ! -d node_modules ]]; then
@@ -26,6 +22,11 @@ if [[ ! -f .env.local ]]; then
   cp .env.example .env.local
   echo "已创建本地配置文件 .env.local"
 fi
+
+LOCAL_PORT="$(awk -F= '$1 == "ATLAS_PORT" { gsub(/[[:space:]]/, "", $2); print $2; exit }' .env.local 2>/dev/null || true)"
+PORT="${ATLAS_PORT:-${LOCAL_PORT:-3210}}"
+URL="http://localhost:${PORT}"
+echo "访问地址: $URL"
 
 save_env_secret_to_keychain() {
   local env_name="$1"

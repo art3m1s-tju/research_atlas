@@ -4,8 +4,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
-PORT="${ATLAS_PORT:-3210}"
-LOCAL_URL="http://127.0.0.1:${PORT}"
 
 if command -v tailscale >/dev/null 2>&1; then
   TAILSCALE_BIN="$(command -v tailscale)"
@@ -23,6 +21,10 @@ fi
 
 if [[ ! -d node_modules ]]; then npm install; fi
 if [[ ! -f .env.local ]]; then cp .env.example .env.local; fi
+
+LOCAL_PORT="$(awk -F= '$1 == "ATLAS_PORT" { gsub(/[[:space:]]/, "", $2); print $2; exit }' .env.local 2>/dev/null || true)"
+PORT="${ATLAS_PORT:-${LOCAL_PORT:-3210}}"
+LOCAL_URL="http://127.0.0.1:${PORT}"
 
 mkdir -p data
 if ! curl -x '' -fsS --max-time 2 "$LOCAL_URL" >/dev/null 2>&1; then
