@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-page: #f5f7fb;
+  --bg-card: #ffffff;
+  --text-primary: #1f2937;
+  --text-secondary: #6b7280;
+  --text-report: #8a6a3b;
+  --brand-dark: #0f2744;
+  --border-soft: #e5e7eb;
+  --chip-bg: #f3f4f6;
+  --shadow-card: 0 8px 30px rgba(15, 23, 42, 0.06);
+  --radius-card: 20px;
+  --radius-chip: 10px;
+  --radius-button: 12px;
+}
+
+@layer base {
+  body {
+    background-color: var(--bg-page);
+    color: var(--text-primary);
+  }
+}

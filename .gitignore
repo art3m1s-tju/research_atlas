@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+
+# database
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# env
+.env.local
+.env*.local
+
+# build
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
