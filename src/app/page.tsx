@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import Sidebar from "@/components/Sidebar";
 import PaperCard from "@/components/PaperCard";
+import DailyRecommendations from "@/components/DailyRecommendations";
 
 interface Paper {
   id: string;
@@ -242,6 +243,8 @@ export default function Home() {
               )}
             </div>
           </div>
+
+          <DailyRecommendations />
 
           <div className="mb-6 flex flex-wrap gap-2">
             {[

@@ -75,6 +75,7 @@ export default function PaperCard({ paper }: { paper: Paper }) {
       if (response.ok) {
         const data = await response.json();
         setUserState(data.userState || {});
+        window.dispatchEvent(new CustomEvent("paper-feedback-updated"));
       }
     } finally {
       setFeedbackLoading(false);
