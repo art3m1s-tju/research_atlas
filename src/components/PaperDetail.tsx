@@ -37,6 +37,7 @@ type RelatedPaper = {
 };
 
 type EvidenceItem = { type: string; label: string; content: string; source: string; confidence: string };
+type TranslationState = { status: "pending" | "running" | "completed" | "failed"; source_url?: string | null; error?: string | null; translationUrl?: string | null; source_chars?: number; translated_chars?: number; updated_at?: string };
 
 export default function PaperDetail({ id }: { id: string }) {
   const [paper, setPaper] = useState<Paper | null>(null);
@@ -52,20 +53,34 @@ export default function PaperDetail({ id }: { id: string }) {
   const [classificationProvider, setClassificationProvider] = useState<string>();
   const [classifying, setClassifying] = useState(false);
   const [creatingDirection, setCreatingDirection] = useState(false);
+  const [translation, setTranslation] = useState<TranslationState | null>(null);
+  const [translationStarting, setTranslationStarting] = useState(false);
 
   useEffect(() => {
     Promise.all([
       fetch(`/api/papers/${encodeURIComponent(id)}`).then((response) => response.json()),
       fetch(`/api/papers/${encodeURIComponent(id)}/related`).then((response) => response.json()).catch(() => ({ similar: [], citedBy: [], references: [] })),
       fetch(`/api/papers/${encodeURIComponent(id)}/evidence`).then((response) => response.json()).catch(() => ({ evidence: [], note: "证据卡暂时不可用" })),
-    ]).then(([data, relationData, evidenceData]) => {
+      fetch(`/api/papers/${encodeURIComponent(id)}/translation`, { cache: "no-store" }).then((response) => response.json()).catch(() => ({ translation: null })),
+    ]).then(([data, relationData, evidenceData, translationData]) => {
       setPaper(data.paper || null);
       setNote(data.paper?.userState?.note || "");
       setSaved(Boolean(data.paper?.userState?.isSaved));
       setRelated(relationData);
       setEvidence({ items: evidenceData.evidence || [], note: evidenceData.note });
+      setTranslation(translationData.translation || null);
     }).finally(() => setLoading(false));
   }, [id]);
+
+  const translationStatus = translation?.status;
+  useEffect(() => {
+    if (!translationStatus || !["pending", "running"].includes(translationStatus)) return;
+    const timer = window.setInterval(async () => {
+      const response = await fetch(`/api/papers/${encodeURIComponent(id)}/translation`, { cache: "no-store" });
+      if (response.ok) setTranslation((await response.json()).translation || null);
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [id, translationStatus]);
 
   async function feedback(action: string, payload: Record<string, unknown> = {}) {
     const response = await fetch(`/api/papers/${encodeURIComponent(id)}/feedback`, {
@@ -117,6 +132,18 @@ export default function PaperDetail({ id }: { id: string }) {
     }
   }
 
+  async function startTranslation() {
+    setTranslationStarting(true);
+    try {
+      const response = await fetch(`/api/papers/${encodeURIComponent(id)}/translation`, { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "翻译任务启动失败");
+      setTranslation((current) => ({ ...(current || {}), status: data.status || "pending", error: null } as TranslationState));
+    } catch (error) {
+      setTranslation({ status: "failed", error: error instanceof Error ? error.message : "翻译任务启动失败" });
+    } finally { setTranslationStarting(false); }
+  }
+
   if (loading) return <main className="mx-auto max-w-4xl p-8 text-gray-500">加载论文中...</main>;
   if (!paper) return <main className="mx-auto max-w-4xl p-8 text-red-600">论文不存在</main>;
 
@@ -142,9 +169,19 @@ export default function PaperDetail({ id }: { id: string }) {
           {paper.pdfUrl && <a href={paper.pdfUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-blue-600 px-3 py-2 text-sm text-white">打开 PDF</a>}
           {paper.doi && <a href={paper.doi} target="_blank" rel="noreferrer" className="rounded-lg border px-3 py-2 text-sm">打开 DOI</a>}
           <button type="button" onClick={() => classifyPaper()} disabled={classifying} className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-700 hover:bg-sky-100 disabled:opacity-50">{classifying ? "分类中..." : "DeepSeek 分类"}</button>
+          <button type="button" onClick={startTranslation} disabled={translationStarting || translation?.status === "pending" || translation?.status === "running"} className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-700 hover:bg-indigo-100 disabled:opacity-50">{translationStarting || translation?.status === "pending" || translation?.status === "running" ? "翻译处理中..." : translation?.status === "completed" ? "重新翻译" : "翻译全文"}</button>
         </div>
         {classification && <ClassificationPanel result={classification} provider={classificationProvider} message={classificationMessage} onCreateDirection={() => classifyPaper(true)} creating={creatingDirection} />}
         {!classification && classificationMessage && <p className="mt-3 text-xs text-amber-700">{classificationMessage}</p>}
+        {translation && <section className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/60 p-4 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-semibold text-indigo-900">中文翻译工作流</h2>
+            <span className="text-xs text-indigo-700">{translation.status === "completed" ? "已完成" : translation.status === "failed" ? "失败" : translation.status === "running" ? "翻译中" : "排队中"}</span>
+          </div>
+          {translation.status === "completed" && translation.translationUrl && <a href={translation.translationUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700">打开中文译文 Markdown</a>}
+          {translation.status === "failed" && <p className="mt-2 text-xs leading-5 text-red-700">{translation.error || "翻译失败，请检查 DeepSeek 配置和 PDF 是否可访问。"}</p>}
+          {(translation.status === "pending" || translation.status === "running") && <p className="mt-2 text-xs text-indigo-800">任务在后台执行，页面会自动刷新状态；长论文可能需要几分钟。</p>}
+        </section>}
 
         {paper.summaryZh && <section className="mt-8 rounded-lg bg-amber-50 p-5"><h2 className="font-semibold text-amber-900">中文速览</h2><p className="mt-2 leading-7 text-gray-800">{paper.summaryZh}</p></section>}
         <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">摘要</h2><p className="mt-3 whitespace-pre-wrap leading-7 text-gray-700">{paper.abstract || "暂无摘要"}</p></section>

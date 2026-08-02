@@ -152,7 +152,7 @@ npm run summarize:papers
 
 分类接口使用结构化 JSON，要求模型返回主方向、辅助方向、置信度、中文理由、证据术语和可选的新方向建议。它不会根据模型自由发挥的会议、引用量或实验结果做分类。
 
-项目内置了 `$atlas-paper-translate` 工作流技能，适合把已经收藏的论文转成保留公式、代码和引用的中文阅读稿；它默认优先使用 arXiv HTML/Markdown 或可访问 PDF，并把源文、译文、术语表和校验报告保存到 `data/translations/<paper-id>/`。翻译仍需要配置 DeepSeek 或其他兼容的模型服务，不会在同步论文时自动翻译全部论文。
+项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF、提取文本、按段落分块调用 DeepSeek，并把 `source.md`、`translation_zh.md`、`glossary.md` 和 `translation_report.md` 保存到 `data/translations/<paper-id>/`。翻译仍需要配置 DeepSeek、系统安装 `pdftotext`，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
 
 网页中的“同步最新论文”按钮和每日任务也调用同一个多源同步器：
 

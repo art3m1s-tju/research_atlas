@@ -1,0 +1,128 @@
+import Database from "better-sqlite3";
+import { existsSync, readFileSync } from "node:fs";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { ensureResearchFeatureSchema } from "../src/lib/research-features";
+import { splitTranslationChunks, translationDirectory, translationPrompt, translationSourceHash } from "../src/lib/paper-translation";
+
+const execFileAsync = promisify(execFile);
+let dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
+let model = process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
+let apiBaseUrl = process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com";
+let concurrency = Math.max(1, Math.min(4, Number(process.env.TRANSLATION_CONCURRENCY || 2)));
+
+function loadLocalEnv() {
+  if (!existsSync(".env.local")) return;
+  for (const line of readFileSync(".env.local", "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const separator = trimmed.indexOf("=");
+    if (separator < 1) continue;
+    const key = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (process.env[key] === undefined) process.env[key] = value;
+  }
+}
+
+async function extractPdf(urls: string[]) {
+  let lastError = "没有找到可解析的 PDF";
+  for (const url of [...new Set(urls.filter(Boolean))]) {
+    try {
+      const response = await fetch(url, { headers: { Accept: "application/pdf", "User-Agent": "AI-Research-Atlas/0.1" }, signal: AbortSignal.timeout(60000) });
+      if (!response.ok) { lastError = `PDF 请求失败：${response.status}`; continue; }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (!bytes.subarray(0, 4).toString().startsWith("%PDF")) { lastError = "数据源返回的不是 PDF"; continue; }
+      const temporaryPath = path.join(os.tmpdir(), `ai-research-atlas-translation-${Date.now()}.pdf`);
+      await fs.writeFile(temporaryPath, bytes);
+      try {
+        const result = await execFileAsync("pdftotext", ["-layout", temporaryPath, "-"], { maxBuffer: 64 * 1024 * 1024 });
+        return { text: result.stdout, url };
+      } finally { await fs.unlink(temporaryPath).catch(() => undefined); }
+    } catch (error) { lastError = error instanceof Error ? error.message : String(error); }
+  }
+  throw new Error(lastError);
+}
+
+async function translateChunk(chunk: string, index: number, total: number) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(`${apiBaseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, thinking: { type: "disabled" }, temperature: 0.1, max_tokens: 7000, stream: false, messages: [
+          { role: "system", content: "你是严谨的中文学术论文翻译助手。" },
+          { role: "user", content: translationPrompt(chunk, index, total) },
+        ] }),
+        signal: AbortSignal.timeout(120000),
+      });
+      if (!response.ok) throw new Error(`DeepSeek ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+      if (typeof content !== "string" || !content.trim()) throw new Error("DeepSeek 返回空译文");
+      return content.trim();
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function main() {
+  loadLocalEnv();
+  dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
+  model = process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
+  apiBaseUrl = process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com";
+  concurrency = Math.max(1, Math.min(4, Number(process.env.TRANSLATION_CONCURRENCY || 2)));
+  const paperId = Number(process.argv[process.argv.indexOf("--paper-id") + 1]);
+  if (!Number.isInteger(paperId) || paperId <= 0) throw new Error("用法：tsx scripts/translate-paper.ts --paper-id <id>");
+  const db = new Database(dbPath);
+  ensureResearchFeatureSchema(db);
+  const paper = db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id FROM papers WHERE id = ?").get(paperId) as any;
+  if (!paper) throw new Error("论文不存在");
+  if (!process.env.DEEPSEEK_API_KEY) throw new Error("DEEPSEEK_API_KEY 未配置");
+  const sourceHash = translationSourceHash(paper);
+  const outputDirectory = path.join(process.cwd(), translationDirectory(paperId));
+  await fs.mkdir(outputDirectory, { recursive: true });
+  const candidates = [paper.pdf_url, paper.arxiv_id ? `https://arxiv.org/pdf/${String(paper.arxiv_id).replace(/\.pdf$/, "")}.pdf` : ""];
+  const extracted = await extractPdf(candidates);
+  const chunks = splitTranslationChunks(extracted.text);
+  await fs.writeFile(path.join(outputDirectory, "source.md"), `# ${paper.title}\n\n来源：${extracted.url}\n\n---\n\n${extracted.text}\n`, "utf8");
+  const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
+  const glossary = existsSync(terminologyPath) ? await fs.readFile(terminologyPath, "utf8") : "# 术语表\n\n以论文原文为准。\n";
+  await fs.writeFile(path.join(outputDirectory, "glossary.md"), glossary, "utf8");
+  db.prepare("UPDATE paper_translations SET status = 'running', source_hash = ?, source_url = ?, output_dir = ?, source_chars = ?, translated_chars = 0, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?").run(sourceHash, extracted.url, translationDirectory(paperId), extracted.text.length, paperId);
+
+  const results = new Array<string>(chunks.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= chunks.length) return;
+      results[index] = await translateChunk(chunks[index], index + 1, chunks.length);
+      console.log(`translated ${index + 1}/${chunks.length}`);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, () => worker()));
+  const translated = `# ${paper.title}\n\n> 原文：${extracted.url}\n\n---\n\n${results.join("\n\n")}`;
+  await fs.writeFile(path.join(outputDirectory, "translation_zh.md"), `${translated}\n`, "utf8");
+  await fs.writeFile(path.join(outputDirectory, "translation_report.md"), `# 翻译报告\n\n- 模型：${model}\n- 原文字符数：${extracted.text.length}\n- 译文字符数：${translated.length}\n- 分块数：${chunks.length}\n- 并发数：${concurrency}\n- 说明：译文保留论文中的公式、代码、引用键、数据集名和模型名；使用前请结合原文核对。\n`, "utf8");
+  db.prepare("UPDATE paper_translations SET status = 'completed', translated_chars = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?").run(translated.length, paperId);
+  db.close();
+}
+
+main().catch(async (error) => {
+  const paperId = Number(process.argv[process.argv.indexOf("--paper-id") + 1]);
+  if (Number.isInteger(paperId) && paperId > 0) {
+    const db = new Database(dbPath);
+    ensureResearchFeatureSchema(db);
+    db.prepare("UPDATE paper_translations SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?").run(error instanceof Error ? error.message : String(error), paperId);
+    db.close();
+  }
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

@@ -78,6 +78,17 @@ export function ensureResearchFeatureSchema(db: Database.Database) {
       source_hash TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS paper_translations (
+      paper_id INTEGER PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'pending',
+      source_hash TEXT NOT NULL DEFAULT '',
+      source_url TEXT,
+      output_dir TEXT NOT NULL DEFAULT '',
+      error TEXT,
+      source_chars INTEGER NOT NULL DEFAULT 0,
+      translated_chars INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 }
 

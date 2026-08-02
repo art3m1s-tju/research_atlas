@@ -15,6 +15,7 @@
     "sync:custom": "tsx scripts/sync-multi-source.ts",
     "embeddings:backfill": "tsx scripts/embed-papers.ts",
     "summarize:papers": "tsx scripts/summarize-papers.ts",
+    "translate:paper": "tsx scripts/translate-paper.ts",
     "clean:relevance": "tsx scripts/clean-relevance.ts",
     "test:relevance": "tsx scripts/check-relevance.ts",
     "sync:incremental": "tsx scripts/update-citations.ts",
