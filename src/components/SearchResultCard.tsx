@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import ClassificationPanel, { type ClassificationResult } from "@/components/ClassificationPanel";
 
 interface SearchPaper {
   id: string;
@@ -19,6 +20,11 @@ interface SearchPaper {
 export default function SearchResultCard({ paper }: { paper: SearchPaper }) {
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [classification, setClassification] = useState<ClassificationResult | null>(null);
+  const [classifyMessage, setClassifyMessage] = useState("");
+  const [provider, setProvider] = useState<string>();
+  const [creatingDirection, setCreatingDirection] = useState(false);
+  const [paperDbId, setPaperDbId] = useState<number | null>(null);
 
   async function savePaper() {
     setSaving(true);
@@ -26,11 +32,37 @@ export default function SearchResultCard({ paper }: { paper: SearchPaper }) {
       const response = await fetch("/api/library/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(paper) });
       if (response.ok) {
         setSaved(true);
+        const savedData = await response.json();
+        setPaperDbId(savedData.paperId);
+        const classifyResponse = await fetch("/api/classify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paperDbId: savedData.paperId, apply: true }) });
+        const classifyData = await classifyResponse.json();
+        if (classifyResponse.ok) {
+          setClassification(classifyData.classification);
+          setProvider(classifyData.provider);
+          setClassifyMessage(classifyData.message || "");
+        } else setClassifyMessage(classifyData.error || "分类失败，可稍后在论文详情页重试。");
         window.dispatchEvent(new CustomEvent("paper-feedback-updated"));
       }
     } finally {
       setSaving(false);
     }
+  }
+
+  async function createDirection() {
+    if (!classification?.new_direction) return;
+    setCreatingDirection(true);
+    try {
+      const savedId = paperDbId || (await (await fetch("/api/library/save", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(paper) })).json()).paperId;
+      if (!savedId) throw new Error("论文尚未入库");
+      setPaperDbId(savedId);
+      const response = await fetch("/api/classify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paperDbId: savedId, apply: true, createDirection: true }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "创建方向失败");
+      setClassifyMessage(`已创建研究方向：${data.createdDirection?.label || classification.new_direction.label}`);
+      window.dispatchEvent(new CustomEvent("paper-feedback-updated"));
+    } catch (error) {
+      setClassifyMessage(error instanceof Error ? error.message : "创建方向失败");
+    } finally { setCreatingDirection(false); }
   }
 
   return (
@@ -45,6 +77,8 @@ export default function SearchResultCard({ paper }: { paper: SearchPaper }) {
         <a href={paper.sourceUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">打开 OpenAlex</a>
         {paper.pdfUrl && <a href={paper.pdfUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">PDF</a>}
       </div>
+      {classification && <ClassificationPanel result={classification} provider={provider} message={classifyMessage} onCreateDirection={createDirection} creating={creatingDirection} />}
+      {!classification && classifyMessage && <p className="mt-3 text-xs text-amber-700">{classifyMessage}</p>}
     </article>
   );
 }

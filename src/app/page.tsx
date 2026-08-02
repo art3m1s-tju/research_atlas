@@ -5,6 +5,7 @@ import Sidebar from "@/components/Sidebar";
 import PaperCard from "@/components/PaperCard";
 import DailyRecommendations from "@/components/DailyRecommendations";
 import SearchResultCard from "@/components/SearchResultCard";
+import DeepSeekBadge from "@/components/DeepSeekBadge";
 
 interface Paper {
   id: string;
@@ -225,12 +226,15 @@ export default function Home() {
                   自动驾驶论文知识图谱 · 聚焦端到端、规划控制、世界模型
                 </p>
               </div>
-              <button
-                onClick={() => window.open("obsidian://open?vault=Research", "_blank")}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 transition-colors"
-              >
-                📓 在 Obsidian 打开
-              </button>
+              <div className="flex items-center gap-3">
+                <DeepSeekBadge />
+                <button
+                  onClick={() => window.open("obsidian://open?vault=Research", "_blank")}
+                  className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  📓 在 Obsidian 打开
+                </button>
+              </div>
             </div>
 
             {/* Search */}

@@ -26,6 +26,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
     };
     return NextResponse.json({
       paper: {
+        dbId: paper.id,
         id: paper.openalex_id,
         title: paper.title,
         authors: paper.authors || "",

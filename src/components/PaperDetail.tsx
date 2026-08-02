@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import ClassificationPanel, { type ClassificationResult } from "@/components/ClassificationPanel";
 
 type Paper = {
+  dbId: number;
   id: string;
   title: string;
   authors: string;
@@ -45,6 +47,11 @@ export default function PaperDetail({ id }: { id: string }) {
   const [relevanceLabels, setRelevanceLabels] = useState<Record<string, string>>({});
   const [evidence, setEvidence] = useState<{ items: EvidenceItem[]; note?: string } | null>(null);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [classification, setClassification] = useState<ClassificationResult | null>(null);
+  const [classificationMessage, setClassificationMessage] = useState("");
+  const [classificationProvider, setClassificationProvider] = useState<string>();
+  const [classifying, setClassifying] = useState(false);
+  const [creatingDirection, setCreatingDirection] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -92,6 +99,24 @@ export default function PaperDetail({ id }: { id: string }) {
     }
   }
 
+  async function classifyPaper(createDirection = false) {
+    if (!paper) return;
+    if (createDirection) setCreatingDirection(true); else setClassifying(true);
+    try {
+      const response = await fetch("/api/classify", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paperDbId: paper.dbId, apply: true, createDirection }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "分类失败");
+      setClassification(data.classification);
+      setClassificationProvider(data.provider);
+      setClassificationMessage(data.message || (data.createdDirection ? `已创建研究方向：${data.createdDirection.label}` : ""));
+    } catch (error) {
+      setClassificationMessage(error instanceof Error ? error.message : "分类失败");
+    } finally {
+      setClassifying(false);
+      setCreatingDirection(false);
+    }
+  }
+
   if (loading) return <main className="mx-auto max-w-4xl p-8 text-gray-500">加载论文中...</main>;
   if (!paper) return <main className="mx-auto max-w-4xl p-8 text-red-600">论文不存在</main>;
 
@@ -116,7 +141,10 @@ export default function PaperDetail({ id }: { id: string }) {
           </button>
           {paper.pdfUrl && <a href={paper.pdfUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-blue-600 px-3 py-2 text-sm text-white">打开 PDF</a>}
           {paper.doi && <a href={paper.doi} target="_blank" rel="noreferrer" className="rounded-lg border px-3 py-2 text-sm">打开 DOI</a>}
+          <button type="button" onClick={() => classifyPaper()} disabled={classifying} className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-700 hover:bg-sky-100 disabled:opacity-50">{classifying ? "分类中..." : "DeepSeek 分类"}</button>
         </div>
+        {classification && <ClassificationPanel result={classification} provider={classificationProvider} message={classificationMessage} onCreateDirection={() => classifyPaper(true)} creating={creatingDirection} />}
+        {!classification && classificationMessage && <p className="mt-3 text-xs text-amber-700">{classificationMessage}</p>}
 
         {paper.summaryZh && <section className="mt-8 rounded-lg bg-amber-50 p-5"><h2 className="font-semibold text-amber-900">中文速览</h2><p className="mt-2 leading-7 text-gray-800">{paper.summaryZh}</p></section>}
         <section className="mt-8"><h2 className="text-xl font-semibold text-gray-900">摘要</h2><p className="mt-3 whitespace-pre-wrap leading-7 text-gray-700">{paper.abstract || "暂无摘要"}</p></section>

@@ -71,6 +71,13 @@ export function ensureResearchFeatureSchema(db: Database.Database) {
       completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (source, direction)
     );
+    CREATE TABLE IF NOT EXISTS paper_classifications (
+      paper_id INTEGER PRIMARY KEY,
+      result_json TEXT NOT NULL,
+      model TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 }
 
