@@ -5,7 +5,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { normalizeTranslatedMarkdown, protectStructuredMarkdown, restoreStructuredMarkdown, splitTranslationChunks, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, validateTranslatedMarkdown } from "../src/lib/paper-translation";
+import { normalizeTranslatedMarkdown, protectStructuredMarkdown, restoreImageLayout, restoreStructuredMarkdown, splitTranslationChunks, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, validateTranslatedMarkdown } from "../src/lib/paper-translation";
 
 const execFileAsync = promisify(execFile);
 let dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
@@ -40,26 +40,70 @@ function parserPythonCandidates() {
   ].filter((value): value is string => Boolean(value)))];
 }
 
+function parserEnvironments() {
+  const base = { ...process.env };
+  if (process.env.TRANSLATION_PARSER_USE_PROXY === "1") return [base];
+  const direct = { ...base };
+  for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]) delete direct[key];
+  direct.NO_PROXY = "*";
+  direct.no_proxy = "*";
+  return [direct, base];
+}
+
 async function parseStructuredPdf(pdfPath: string, outputDirectory: string) {
   const parserMode = (process.env.TRANSLATION_PARSER || "auto").toLowerCase();
   if (parserMode === "legacy" || parserMode === "pdftotext") return null;
   const parserScript = path.join(process.cwd(), "scripts", "parse-paper.py");
   let lastError = "Docling 解析器不可用";
-  for (const python of parserPythonCandidates()) {
-    try {
-      const { stdout } = await execFileAsync(python, [parserScript, "--pdf", pdfPath, "--output", outputDirectory], { maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60 * 1000 });
-      const manifestLine = stdout.trim().split("\n").at(-1);
-      const manifest = manifestLine ? JSON.parse(manifestLine) : null;
-      const markdown = await fs.readFile(path.join(outputDirectory, "source_structured.md"), "utf8");
-      if (!manifest || !markdown.trim()) throw new Error("Docling 没有生成结构化 Markdown");
-      return { markdown, parser: "docling", manifest };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
+  for (const parserEnv of parserEnvironments()) {
+    for (const python of parserPythonCandidates()) {
+      try {
+        const { stdout } = await execFileAsync(python, [parserScript, "--pdf", pdfPath, "--output", outputDirectory], { env: parserEnv, maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60 * 1000 });
+        const manifestLine = stdout.trim().split("\n").at(-1);
+        const manifest = manifestLine ? JSON.parse(manifestLine) : null;
+        const markdown = await fs.readFile(path.join(outputDirectory, "source_structured.md"), "utf8");
+        if (!manifest || !markdown.trim()) throw new Error("Docling 没有生成结构化 Markdown");
+        return { markdown, parser: "docling", manifest };
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
     }
   }
   if (parserMode === "docling") throw new Error(lastError);
   console.warn(`  Docling 未启用，回退 pdftotext：${lastError}`);
   return null;
+}
+
+function insertExtractedImages(text: string, structuredMarkdown: string) {
+  const structuredLines = structuredMarkdown.split("\n");
+  const imagesByFigure = new Map<number, string[]>();
+  const unnumberedImages: string[] = [];
+  structuredLines.forEach((line, index) => {
+    const pathMatch = line.match(/!\[[^\]]*\]\((assets\/[^)]+)\)/);
+    if (!pathMatch) return;
+    const context = structuredLines.slice(Math.max(0, index - 8), index).join(" ");
+    const numberMatch = context.match(/\b(?:Fig\.?|Figure)\s*(\d+)\b/i);
+    if (!numberMatch) { unnumberedImages.push(pathMatch[1]); return; }
+    const figureNumber = Number(numberMatch[1]);
+    imagesByFigure.set(figureNumber, [...(imagesByFigure.get(figureNumber) || []), pathMatch[1]]);
+  });
+  if (!imagesByFigure.size && !unnumberedImages.length) return text;
+  const lines = text.split("\n");
+  let figureSearchStart = 0;
+  for (const [figureNumber, imagePaths] of [...imagesByFigure.entries()].sort(([left], [right]) => left - right)) {
+    const figurePattern = new RegExp(`\\b(?:Fig\\.?|Figure)\\s*${figureNumber}\\b`, "i");
+    let inserted = false;
+    for (let lineIndex = figureSearchStart; lineIndex < lines.length; lineIndex += 1) {
+      if (!figurePattern.test(lines[lineIndex])) continue;
+      lines.splice(lineIndex + 1, 0, "", ...imagePaths.map((imagePath) => `![Image](${imagePath})`), "");
+      figureSearchStart = lineIndex + imagePaths.length + 3;
+      inserted = true;
+      break;
+    }
+    if (!inserted) lines.push("", ...imagePaths.map((imagePath) => `![Image](${imagePath})`), "");
+  }
+  if (unnumberedImages.length) lines.push("", ...unnumberedImages.map((imagePath) => `![Image](${imagePath})`), "");
+  return lines.join("\n");
 }
 
 async function extractPdf(urls: string[], outputDirectory: string) {
@@ -73,8 +117,8 @@ async function extractPdf(urls: string[], outputDirectory: string) {
       const pdfPath = path.join(outputDirectory, "source.pdf");
       await fs.writeFile(pdfPath, bytes);
       const structured = await parseStructuredPdf(pdfPath, outputDirectory);
-      if (structured) return { text: structured.markdown, url, pdfPath, parser: structured.parser, manifest: structured.manifest };
       const result = await execFileAsync("pdftotext", ["-layout", pdfPath, "-"], { maxBuffer: 64 * 1024 * 1024 });
+      if (structured) return { text: insertExtractedImages(result.stdout, structured.markdown), url, pdfPath, parser: "docling+pdftotext", manifest: structured.manifest };
       return { text: result.stdout, url, pdfPath, parser: "pdftotext", manifest: null };
     } catch (error) { lastError = error instanceof Error ? error.message : String(error); }
   }
@@ -149,10 +193,11 @@ async function main() {
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, () => worker()));
   const translated = `# ${paper.title}\n\n> 原文：${extracted.url}\n\n---\n\n${results.map((result) => normalizeTranslatedMarkdown(result)).join("\n\n")}`;
-  const validationIssues = validateTranslatedMarkdown(extracted.text, translated);
-  await fs.writeFile(path.join(outputDirectory, "translation_zh.md"), `${translated}\n`, "utf8");
-  await fs.writeFile(path.join(outputDirectory, "translation_report.md"), `# 翻译报告\n\n- 模型：${model}\n- PDF 解析器：${extracted.parser}\n- 原文字符数：${extracted.text.length}\n- 译文字符数：${translated.length}\n- 分块数：${chunks.length}\n- 并发数：${concurrency}\n- 图片资源：${extracted.manifest?.assets?.length ?? 0}\n- 结构校验：${validationIssues.length ? validationIssues.join("；") : "通过"}\n- 说明：译文保留论文中的公式、代码、引用键、数据集名和模型名；使用前请结合原文核对。\n`, "utf8");
-  db.prepare("UPDATE paper_translations SET status = 'completed', translated_chars = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?").run(translated.length, paperId);
+  const finalMarkdown = normalizeTranslatedMarkdown(restoreImageLayout(extracted.text, translated));
+  const validationIssues = validateTranslatedMarkdown(extracted.text, finalMarkdown);
+  await fs.writeFile(path.join(outputDirectory, "translation_zh.md"), `${finalMarkdown}\n`, "utf8");
+  await fs.writeFile(path.join(outputDirectory, "translation_report.md"), `# 翻译报告\n\n- 模型：${model}\n- PDF 解析器：${extracted.parser}\n- 原文字符数：${extracted.text.length}\n- 译文字符数：${finalMarkdown.length}\n- 分块数：${chunks.length}\n- 并发数：${concurrency}\n- 图片资源：${extracted.manifest?.assets?.length ?? 0}\n- 结构校验：${validationIssues.length ? validationIssues.join("；") : "通过"}\n- 说明：译文保留论文中的公式、代码、引用键、数据集名和模型名；使用前请结合原文核对。\n`, "utf8");
+  db.prepare("UPDATE paper_translations SET status = 'completed', translated_chars = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?").run(finalMarkdown.length, paperId);
   db.close();
 }
 

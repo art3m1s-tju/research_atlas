@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v4";
+export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v7";
 
 export function translationSourceHash(paper: { title: string; abstract?: string | null; pdf_url?: string | null; doi?: string | null }) {
   return createHash("sha256").update([TRANSLATION_FORMAT_VERSION, paper.title, paper.abstract || "", paper.pdf_url || "", paper.doi || ""].join("\n")).digest("hex");
@@ -50,13 +50,47 @@ export function protectStructuredMarkdown(markdown: string) {
     return token;
   };
 
-  let text = markdown.replace(/(!\[[^\]]*\]\()([^\)]+)(\))/g, (match, prefix: string, path: string, suffix: string) => `${prefix}${protect(path, "ASSET")}${suffix}`);
+  let text = markdown.replace(/!\[[^\]]*\]\([^\)]+\)/g, (value) => protect(value, "ASSET"));
   text = text.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\$[^$\n]+\$|\\\([^\n]+\\\)/g, (value) => protect(value, "MATH"));
   return { text, protectedTokens };
 }
 
 export function restoreStructuredMarkdown(markdown: string, protectedTokens: ProtectedToken[]) {
   return protectedTokens.reduce((result, item) => result.replaceAll(item.token, () => item.value), markdown);
+}
+
+function figureNumberAround(markdown: string, start: number) {
+  const before = markdown.slice(Math.max(0, start - 500), start);
+  const previousMatch = [...before.matchAll(/\b(?:Fig\.?|Figure)\s*(\d+)\b/gi)].at(-1);
+  if (previousMatch) return Number(previousMatch[1]);
+  const after = markdown.slice(start, start + 500);
+  const nextMatch = after.match(/\b(?:Fig\.?|Figure)\s*(\d+)\b/i);
+  const match = nextMatch;
+  return match ? Number(match[1]) : null;
+}
+
+/** Rebuild image placement from the parser output after translation. */
+export function restoreImageLayout(source: string, translated: string) {
+  const sourceImages: Array<{ path: string; figureNumber: number | null }> = [];
+  const imagePattern = /!\[[^\]]*\]\((assets\/[^)]+)\)/g;
+  for (const match of source.matchAll(imagePattern)) {
+    sourceImages.push({ path: match[1], figureNumber: figureNumberAround(source, match.index ?? 0) });
+  }
+  if (!sourceImages.length) return translated;
+
+  const lines = translated.replace(imagePattern, "").split("\n");
+  const insertions = new Map<number, string[]>();
+  const figureLines = new Map<number, number>();
+  for (const image of sourceImages) {
+    let lineIndex = -1;
+    if (image.figureNumber !== null) {
+      lineIndex = figureLines.get(image.figureNumber) ?? lines.findIndex((line) => new RegExp(`(?:图|Fig\\.?|Figure)\\s*${image.figureNumber}\\s*[:：]`, "i").test(line));
+      if (lineIndex >= 0) figureLines.set(image.figureNumber, lineIndex);
+    }
+    if (lineIndex < 0) lineIndex = lines.length - 1;
+    insertions.set(lineIndex, [...(insertions.get(lineIndex) || []), `![Image](${image.path})`]);
+  }
+  return lines.flatMap((line, index) => [line, ...(insertions.get(index) || []), ""]).join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 export function validateTranslatedMarkdown(source: string, translated: string) {
@@ -82,17 +116,61 @@ function cleanMathBody(line: string) {
   return line.replace(/\\\(|\\\)|\\\[|\\\]/g, "").trim();
 }
 
+function removeDuplicateMathFences(markdown: string) {
+  const output: string[] = [];
+  let inCodeFence = false;
+  let lastNonEmpty = -1;
+  for (const rawLine of markdown.replace(/\r/g, "").split("\n")) {
+    const line = rawLine.trim();
+    if (line.startsWith("```")) inCodeFence = !inCodeFence;
+    if (!inCodeFence && line === "$$" && lastNonEmpty >= 0 && output[lastNonEmpty]?.trim() === "$$") continue;
+    output.push(rawLine);
+    if (line) lastNonEmpty = output.length - 1;
+  }
+  return output.join("\n");
+}
+
+function expandSingleLineMath(markdown: string) {
+  const output: string[] = [];
+  let inCodeFence = false;
+  for (const rawLine of markdown.split("\n")) {
+    const line = rawLine.trim();
+    if (line.startsWith("```")) {
+      inCodeFence = !inCodeFence;
+      output.push(rawLine);
+      continue;
+    }
+    if (!inCodeFence && line.startsWith("$$") && line.endsWith("$$") && line.length > 4) {
+      output.push("$$", line.slice(2, -2).trim(), "$$");
+      continue;
+    }
+    output.push(rawLine);
+  }
+  return output.join("\n");
+}
+
 export function normalizeTranslatedMarkdown(markdown: string) {
   const output: string[] = [];
   let inFence = false;
-  for (const rawLine of markdown.replace(/\r/g, "").split("\n")) {
+  let inMathBlock = false;
+  const normalizedInput = expandSingleLineMath(removeDuplicateMathFences(markdown).replace(/<!--\s*formula-not-decoded\s*-->/gi, "[公式需回看原文 PDF]"));
+  for (const rawLine of normalizedInput.split("\n")) {
     const line = rawLine.trim();
     if (line.startsWith("```")) {
       inFence = !inFence;
       output.push(rawLine);
       continue;
     }
-    if (inFence || !line) {
+    if (inFence) {
+      output.push(rawLine);
+      continue;
+    }
+    if (line === "$$") {
+      inMathBlock = !inMathBlock;
+      output.push(rawLine);
+      continue;
+    }
+    if (inMathBlock || !line) {
       output.push(rawLine);
       continue;
     }
