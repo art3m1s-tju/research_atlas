@@ -57,4 +57,15 @@
 .translation-prose th,
 .translation-prose td { border: 1px solid #d1d5db; padding: 0.5rem 0.7rem; text-align: left; min-width: 7rem; }
 .translation-prose th { background: #f3f4f6; font-weight: 700; }
-.translation-prose img { max-width: 100%; height: auto; }
+.translation-prose img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  margin: 1.25rem auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.75rem;
+  background: #fff;
+  cursor: zoom-in;
+}
+.translation-prose .paper-image-button { display: block; width: 100%; padding: 0; border: 0; background: transparent; }

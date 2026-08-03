@@ -107,7 +107,7 @@ export function validateTranslatedMarkdown(source: string, translated: string) {
 
 function equationLike(line: string) {
   const hasMathCommand = /\\(?:frac|begin|end|text|mathbb|mathbf|mathcal|left|right|tag|operatorname|exp|sum|int|sqrt|cdot|top|hat|tilde|Delta|lambda|in|sim|partial|nabla|geq|leq)/.test(line);
-  const hasAssignment = /[A-Za-z][A-Za-z0-9]*[_^]?\s*=/.test(line);
+  const hasAssignment = /=/.test(line);
   const hasChineseSentence = /[\u4e00-\u9fff]{8,}/.test(line);
   return !hasChineseSentence && (hasMathCommand || hasAssignment);
 }
@@ -128,6 +128,117 @@ function removeDuplicateMathFences(markdown: string) {
     if (line) lastNonEmpty = output.length - 1;
   }
   return output.join("\n");
+}
+
+function repairMalformedMathFences(markdown: string) {
+  const lines = markdown.replace(/\r/g, "").split("\n");
+  const output: string[] = [];
+  let inMath = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trim() !== "$$") {
+      output.push(lines[index]);
+      continue;
+    }
+    let next = index + 1;
+    while (next < lines.length && !lines[next].trim()) next += 1;
+    if (next < lines.length && lines[next].trim() === "$$") {
+      const previous = [...output].reverse().find((line) => line.trim()) || "";
+      const following = lines.slice(next + 1).find((line) => line.trim()) || "";
+      if (!inMath && equationLike(following)) {
+        output.push("$$");
+        inMath = true;
+      } else if (inMath && /\\begin\{cases\}|\\\\\s*$/.test(previous)) {
+        // DeepSeek sometimes inserts an empty fence inside a cases block.
+      } else if (!inMath) {
+        // Drop an empty display-math block.
+      } else {
+        output.push(lines[index]);
+        inMath = false;
+        output.push(...lines.slice(index + 1, next + 1));
+        inMath = true;
+      }
+      index = next;
+      continue;
+    }
+    output.push(lines[index]);
+    inMath = !inMath;
+  }
+  return output.join("\n");
+}
+
+function canonicalizeLegacyMath(markdown: string) {
+  const lines = markdown.replace(/\r/g, "").split("\n");
+  const output: string[] = [];
+  const pending: string[] = [];
+  let inCodeFence = false;
+  const flush = () => {
+    if (!pending.length) return;
+    output.push("$$", ...pending, "$$");
+    pending.length = 0;
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
+    const line = rawLine.trim();
+    if (line.startsWith("```")) {
+      flush();
+      inCodeFence = !inCodeFence;
+      output.push(rawLine);
+      continue;
+    }
+    if (!inCodeFence && line === "$$") continue;
+    if (!inCodeFence && !line) {
+      const following = lines.slice(index + 1).find((item) => item.trim()) || "";
+      if (pending.length && equationLike(following)) continue;
+      flush();
+      output.push(rawLine);
+      continue;
+    }
+    if (!inCodeFence && equationLike(line) && !line.includes("$") && !line.startsWith("#")) {
+      if (pending.length && /\\tag\s*\{/.test(pending[pending.length - 1]) && /\\tag\s*\{/.test(line)) flush();
+      pending.push(cleanMathBody(line));
+      continue;
+    }
+    flush();
+    output.push(rawLine);
+  }
+  flush();
+  return output.join("\n");
+}
+
+function wrapUnfencedEquationLines(markdown: string) {
+  const output: string[] = [];
+  let inCodeFence = false;
+  let inMath = false;
+  for (const rawLine of markdown.split("\n")) {
+    const line = rawLine.trim();
+    if (line.startsWith("```")) {
+      inCodeFence = !inCodeFence;
+      output.push(rawLine);
+      continue;
+    }
+    if (inCodeFence) {
+      output.push(rawLine);
+      continue;
+    }
+    if (line === "$$") {
+      inMath = !inMath;
+      output.push(rawLine);
+      continue;
+    }
+    if (!inMath && equationLike(line) && !line.includes("$") && !line.startsWith("#")) {
+      output.push("$$", cleanMathBody(line), "$$");
+      continue;
+    }
+    output.push(rawLine);
+  }
+  return output.join("\n");
+}
+
+function normalizeLatexDelimiters(markdown: string) {
+  return markdown
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_match, body: string) => `\n$$\n${body}\n$$\n`)
+    .replace(/\\\(([^\n]*?)\\\)/g, (_match, body: string) => `$${body}$`)
+    .replace(/([^\n])\s+(#{2,4}\s+)/g, "$1\n\n$2");
 }
 
 function expandSingleLineMath(markdown: string) {
@@ -153,7 +264,10 @@ export function normalizeTranslatedMarkdown(markdown: string) {
   const output: string[] = [];
   let inFence = false;
   let inMathBlock = false;
-  const normalizedInput = expandSingleLineMath(removeDuplicateMathFences(markdown).replace(/<!--\s*formula-not-decoded\s*-->/gi, "[公式需回看原文 PDF]"));
+  const rawMathFenceCount = (markdown.match(/\$\$\s*\n\s*\$\$/g) || []).length;
+  const repaired = repairMalformedMathFences(removeDuplicateMathFences(markdown));
+  const legacySafe = rawMathFenceCount > 3 ? canonicalizeLegacyMath(repaired) : repaired;
+  const normalizedInput = expandSingleLineMath(normalizeLatexDelimiters(legacySafe).replace(/<!--\s*formula-not-decoded\s*-->/gi, "[公式需回看原文 PDF]"));
   for (const rawLine of normalizedInput.split("\n")) {
     const line = rawLine.trim();
     if (line.startsWith("```")) {
@@ -200,7 +314,8 @@ export function normalizeTranslatedMarkdown(markdown: string) {
     }
     output.push(rawLine);
   }
-  return output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (inMathBlock) output.push("$$");
+  return wrapUnfencedEquationLines(output.join("\n")).replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export function translationPrompt(chunk: string, index: number, total: number) {

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -33,9 +34,17 @@ def main() -> int:
     output_dir = Path(args.output).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     assets_dir = output_dir / "assets"
+    if assets_dir.exists():
+        shutil.rmtree(assets_dir)
     assets_dir.mkdir(parents=True, exist_ok=True)
 
+    try:
+        image_scale = max(1.0, min(4.0, float(os.getenv("TRANSLATION_IMAGE_SCALE", "2.0"))))
+    except ValueError:
+        image_scale = 2.0
+
     options = PdfPipelineOptions(
+        images_scale=image_scale,
         generate_picture_images=True,
         do_ocr=os.getenv("TRANSLATION_ENABLE_OCR", "0") == "1",
         do_formula_enrichment=os.getenv("TRANSLATION_ENABLE_FORMULA", "0") == "1",

@@ -29,6 +29,7 @@ export default function TranslationReader({ id }: { id: string }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [showOriginal, setShowOriginal] = useState(false);
+  const [imagePreview, setImagePreview] = useState<{ src: string; alt: string } | null>(null);
   const canonicalId = decodePaperId(id);
 
   useEffect(() => {
@@ -66,10 +67,20 @@ export default function TranslationReader({ id }: { id: string }) {
           {showOriginal && <section className="mb-8 rounded-xl border border-gray-200 bg-gray-50 p-3"><div className="mb-3 flex items-center justify-between gap-2"><h2 className="font-semibold text-gray-900">原文 PDF 对照</h2>{translationMeta?.source_url && <a href={translationMeta.source_url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">新窗口打开</a>}</div>{translationMeta?.source_url ? <iframe title="论文原文 PDF" src={translationMeta.source_url} className="h-[70vh] w-full rounded-lg border border-gray-300 bg-white" /> : <p className="text-sm text-gray-500">原文 PDF 地址暂不可用。</p>}</section>}
           <div className="translation-prose min-w-0">
             <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">这是中文阅读稿。公式、图表和版式如有疑问，可点击上方“查看原文 PDF”核对。</div>
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>{markdown}</ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+              components={{
+                img: ({ src, alt }) => {
+                  if (!src || typeof src !== "string") return null;
+                  return <button type="button" className="paper-image-button" aria-label="放大查看图片" onClick={() => setImagePreview({ src, alt: alt || "论文图表" })}><img src={src} alt={alt || "论文图表"} loading="lazy" /></button>;
+                },
+              }}
+            >{markdown}</ReactMarkdown>
           </div>
         </div>
       </article>
+      {imagePreview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-6" role="dialog" aria-modal="true" aria-label="放大查看论文图表" onClick={() => setImagePreview(null)}><button type="button" className="absolute right-5 top-4 rounded-full bg-white/90 px-3 py-1 text-2xl leading-none text-gray-800" aria-label="关闭图片预览" onClick={() => setImagePreview(null)}>×</button><img src={imagePreview.src} alt={imagePreview.alt} className="max-h-[92vh] max-w-[94vw] object-contain" onClick={(event) => event.stopPropagation()} /></div>}
     </main>
   );
 }
