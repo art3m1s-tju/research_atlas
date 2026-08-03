@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 
+export const TRANSLATION_FORMAT_VERSION = "markdown-structure-v3";
+
 export function translationSourceHash(paper: { title: string; abstract?: string | null; pdf_url?: string | null; doi?: string | null }) {
-  return createHash("sha256").update([paper.title, paper.abstract || "", paper.pdf_url || "", paper.doi || ""].join("\n")).digest("hex");
+  return createHash("sha256").update([TRANSLATION_FORMAT_VERSION, paper.title, paper.abstract || "", paper.pdf_url || "", paper.doi || ""].join("\n")).digest("hex");
 }
 
 export function translationDirectory(paperId: number) {
