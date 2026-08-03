@@ -12,6 +12,7 @@ data/*.db-wal
 data/*.db-shm
 data/sync-status.json
 data/sync.log
+data/sync-launchd.log
 data/sync.lock
 data/sync-checkpoints.json
 data/daily-digest.md
