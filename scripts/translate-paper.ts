@@ -6,7 +6,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { splitTranslationChunks, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates } from "../src/lib/paper-translation";
+import { normalizeTranslatedMarkdown, splitTranslationChunks, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates } from "../src/lib/paper-translation";
 
 const execFileAsync = promisify(execFile);
 let dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
@@ -111,7 +111,7 @@ async function main() {
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, () => worker()));
-  const translated = `# ${paper.title}\n\n> 原文：${extracted.url}\n\n---\n\n${results.join("\n\n")}`;
+  const translated = `# ${paper.title}\n\n> 原文：${extracted.url}\n\n---\n\n${results.map((result) => normalizeTranslatedMarkdown(result)).join("\n\n")}`;
   await fs.writeFile(path.join(outputDirectory, "translation_zh.md"), `${translated}\n`, "utf8");
   await fs.writeFile(path.join(outputDirectory, "translation_report.md"), `# 翻译报告\n\n- 模型：${model}\n- 原文字符数：${extracted.text.length}\n- 译文字符数：${translated.length}\n- 分块数：${chunks.length}\n- 并发数：${concurrency}\n- 说明：译文保留论文中的公式、代码、引用键、数据集名和模型名；使用前请结合原文核对。\n`, "utf8");
   db.prepare("UPDATE paper_translations SET status = 'completed', translated_chars = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?").run(translated.length, paperId);

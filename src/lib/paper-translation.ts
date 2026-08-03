@@ -34,6 +34,60 @@ export function splitTranslationChunks(text: string, maxChars = 9000) {
   return chunks;
 }
 
+function equationLike(line: string) {
+  const hasMathCommand = /\\(?:frac|begin|end|text|mathbb|mathbf|mathcal|left|right|tag|operatorname|exp|sum|int|sqrt|cdot|top|hat|tilde|Delta|lambda|in|sim|partial|nabla|geq|leq)/.test(line);
+  const hasAssignment = /[A-Za-z][A-Za-z0-9]*[_^]?\s*=/.test(line);
+  const hasChineseSentence = /[\u4e00-\u9fff]{8,}/.test(line);
+  return !hasChineseSentence && (hasMathCommand || hasAssignment);
+}
+
+function cleanMathBody(line: string) {
+  return line.replace(/\\\(|\\\)|\\\[|\\\]/g, "").trim();
+}
+
+export function normalizeTranslatedMarkdown(markdown: string) {
+  const output: string[] = [];
+  let inFence = false;
+  for (const rawLine of markdown.replace(/\r/g, "").split("\n")) {
+    const line = rawLine.trim();
+    if (line.startsWith("```")) {
+      inFence = !inFence;
+      output.push(rawLine);
+      continue;
+    }
+    if (inFence || !line) {
+      output.push(rawLine);
+      continue;
+    }
+    if (/^\\\[.*\\\]$/.test(line)) {
+      output.push("$$", line.slice(2, -2).trim(), "$$");
+      continue;
+    }
+    if (/^\\\(.*\\\)$/.test(line)) {
+      output.push(`$${line.slice(2, -2).trim()}$`);
+      continue;
+    }
+    const closingMath = line.indexOf("$$");
+    if (closingMath > 0 && equationLike(line.slice(0, closingMath))) {
+      output.push("$$", cleanMathBody(line.slice(0, closingMath)), "$$");
+      if (line.slice(closingMath + 2).trim()) output.push(line.slice(closingMath + 2).trim());
+      continue;
+    }
+    if (equationLike(line) && !line.includes("$") && !line.startsWith("#")) {
+      output.push("$$", cleanMathBody(line), "$$");
+      continue;
+    }
+    if (/^#\s+/.test(line)) {
+      const heading = line.replace(/^#\s+/, "");
+      if (heading.length >= 18 && !/^(?:[IVX]+\.?|\d+(?:\.\d+)?)\s/.test(heading)) continue;
+      output.push(`## ${heading}`);
+      continue;
+    }
+    output.push(rawLine);
+  }
+  return output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export function translationPrompt(chunk: string, index: number, total: number) {
   return `你是严谨的中文科研论文排版翻译助手。请把下面论文原文第 ${index}/${total} 个片段翻译成简体中文，并直接输出可阅读的 Markdown。
 
