@@ -288,7 +288,7 @@ export default function Sidebar({
                 <button type="button" onClick={createCluster} className="rounded bg-slate-700 px-2 py-1 text-[10px] text-white">保存</button>
               </div>
               <div className="mt-2 space-y-1">
-                {clusters.map((cluster) => <div key={cluster.id} className="flex items-center justify-between rounded bg-white px-2 py-1 text-[10px] text-gray-700"><span>{cluster.name} · {cluster.directions.length} 个方向</span><button type="button" onClick={() => deleteCluster(cluster.id)} className="text-red-500">删除</button></div>)}
+                {clusters.map((cluster) => <div key={cluster.id} className="rounded bg-white px-2 py-1.5 text-[10px] text-gray-700"><div className="flex items-center justify-between gap-2"><span className="font-medium">{cluster.name}</span><button type="button" onClick={() => deleteCluster(cluster.id)} className="text-red-500">删除</button></div><div className="mt-1 flex flex-wrap gap-1">{cluster.directions.map((item) => <span key={item.direction} className="rounded bg-violet-50 px-1.5 py-0.5 text-violet-700">{directions.find((direction) => direction.key === item.direction)?.label || item.direction}</span>)}</div></div>)}
               </div>
             </div>
             {evaluation && evaluation.labels.length > 0 && (
