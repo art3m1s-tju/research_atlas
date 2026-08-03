@@ -14,6 +14,16 @@ function paperFromId(db: Database.Database, id: string) {
   return db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE openalex_id = ?").get(decodePaperId(id)) as any;
 }
 
+function rewriteAssetReferences(markdown: string, id: string) {
+  const assetBase = `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?asset=`;
+  return markdown.replace(/(!\[[^\]]*\]\()((?:\.\/)?assets\/[^)\s]+)(\))/g, (_match, prefix: string, asset: string, suffix: string) => `${prefix}${assetBase}${encodeURIComponent(asset.replace(/^\.\//, ""))}${suffix}`);
+}
+
+function contentType(filePath: string) {
+  const extension = path.extname(filePath).toLowerCase();
+  return ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".svg": "image/svg+xml" } as Record<string, string>)[extension] || "application/octet-stream";
+}
+
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
   const db = new Database(DB_PATH);
@@ -22,14 +32,26 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     const paper = paperFromId(db, id);
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
     const row = db.prepare("SELECT status, source_url, output_dir, error, source_chars, translated_chars, updated_at FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
-    const file = new URL(request.url).searchParams.get("file");
+    const params = new URL(request.url).searchParams;
+    const asset = params.get("asset");
+    if (asset) {
+      if (!row?.output_dir) return NextResponse.json({ error: "翻译资源尚未生成" }, { status: 404 });
+      const outputRoot = path.resolve(process.cwd(), row.output_dir);
+      const assetPath = path.resolve(outputRoot, asset);
+      if (!assetPath.startsWith(`${outputRoot}${path.sep}`) || !assetPath.includes(`${path.sep}assets${path.sep}`)) return NextResponse.json({ error: "资源路径无效" }, { status: 400 });
+      const content = await fs.readFile(assetPath).catch(() => null);
+      if (content === null) return NextResponse.json({ error: "图片资源不存在" }, { status: 404 });
+      return new NextResponse(content, { headers: { "Content-Type": contentType(assetPath), "Cache-Control": "public, max-age=86400" } });
+    }
+    const file = params.get("file");
     if (file) {
-      if (!row?.output_dir || !["source.md", "translation_zh.md", "glossary.md", "translation_report.md"].includes(file)) {
+      if (!row?.output_dir || !["source.md", "source_structured.md", "document.json", "translation_zh.md", "glossary.md", "translation_report.md"].includes(file)) {
         return NextResponse.json({ error: "翻译文件尚未生成" }, { status: 404 });
       }
       const content = await fs.readFile(path.join(process.cwd(), row.output_dir, file), "utf8").catch(() => null);
       if (content === null) return NextResponse.json({ error: "翻译文件不存在" }, { status: 404 });
-      return new NextResponse(content, { headers: { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `inline; filename="${file}"` } });
+      const renderedContent = file === "translation_zh.md" ? rewriteAssetReferences(content, id) : content;
+      return new NextResponse(renderedContent, { headers: { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `inline; filename="${file}"` } });
     }
     return NextResponse.json({ translation: row ? {
       ...row,

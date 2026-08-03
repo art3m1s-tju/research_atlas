@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const TRANSLATION_FORMAT_VERSION = "markdown-structure-v3";
+export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v4";
 
 export function translationSourceHash(paper: { title: string; abstract?: string | null; pdf_url?: string | null; doi?: string | null }) {
   return createHash("sha256").update([TRANSLATION_FORMAT_VERSION, paper.title, paper.abstract || "", paper.pdf_url || "", paper.doi || ""].join("\n")).digest("hex");
@@ -34,6 +34,41 @@ export function splitTranslationChunks(text: string, maxChars = 9000) {
   }
   if (current) chunks.push(current);
   return chunks;
+}
+
+type ProtectedToken = { token: string; value: string };
+
+/**
+ * Protect structured assets and equations while DeepSeek translates prose.
+ * The parser owns these values; the model must not rewrite paths or LaTeX.
+ */
+export function protectStructuredMarkdown(markdown: string) {
+  const protectedTokens: ProtectedToken[] = [];
+  const protect = (value: string, kind: string) => {
+    const token = `ATLAS_${kind}_${protectedTokens.length}`;
+    protectedTokens.push({ token, value });
+    return token;
+  };
+
+  let text = markdown.replace(/(!\[[^\]]*\]\()([^\)]+)(\))/g, (match, prefix: string, path: string, suffix: string) => `${prefix}${protect(path, "ASSET")}${suffix}`);
+  text = text.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\$[^$\n]+\$|\\\([^\n]+\\\)/g, (value) => protect(value, "MATH"));
+  return { text, protectedTokens };
+}
+
+export function restoreStructuredMarkdown(markdown: string, protectedTokens: ProtectedToken[]) {
+  return protectedTokens.reduce((result, item) => result.replaceAll(item.token, () => item.value), markdown);
+}
+
+export function validateTranslatedMarkdown(source: string, translated: string) {
+  const issues: string[] = [];
+  const sourceImages = (source.match(/!\[/g) || []).length;
+  const translatedImages = (translated.match(/!\[/g) || []).length;
+  if (translated.includes("ATLAS_")) issues.push("存在未恢复的结构化占位符");
+  if (translatedImages < sourceImages) issues.push(`图片数量减少：原文 ${sourceImages}，译文 ${translatedImages}`);
+  if ((translated.match(/^#\s+/gm) || []).length > 1) issues.push("译文包含多个一级标题");
+  const textOutsideMath = translated.replace(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g, "");
+  if (/\\(?:frac|begin|end|text|mathbb|mathbf|mathcal|tag)\b/.test(textOutsideMath)) issues.push("检测到可能未包裹的 LaTeX 公式");
+  return issues;
 }
 
 function equationLike(line: string) {
@@ -100,9 +135,11 @@ export function translationPrompt(chunk: string, index: number, total: number) {
 3. 公式必须保留。行内公式使用 $...$，独立公式使用 $$...$$；保留 LaTeX 命令、上下标、希腊字母和变量，不要把公式改写成自然语言。若 PDF 文本中的公式已经损坏或缺失，写 [公式需回看原文 PDF]，不要猜。
 4. 表格尽量输出 GFM Markdown 表格；不能可靠恢复时保留原始表格文本，并标记 [表格需回看原文 PDF]。
 5. 保留 Figure/Table 编号、图注、表注、引用键、数字、单位、数据集名、模型名、指标名和代码。图注翻译成中文，但不要伪造图片内容；使用 **图 1：**、**表 1：** 这样的明确标记。
-6. 代码块原样保留并用 Markdown 代码围栏；不要用代码围栏包住整段译文。
-7. BEV、E2E、VLA、MPC、nuScenes、CARLA 等术语保持一致；模型名、数据集名和引用键不要翻译。
-8. 不要输出“翻译如下”、总结、解释或本片段之外的内容。
+6. 图片 Markdown、图片路径、资源占位符（例如 ATLAS_ASSET_0）必须原样保留，不得删除、移动到别处或改名。
+7. 公式占位符（例如 ATLAS_MATH_1）必须原样保留；不要把它翻译成文字，也不要在它周围添加代码围栏。
+8. 代码块原样保留并用 Markdown 代码围栏；不要用代码围栏包住整段译文。
+9. BEV、E2E、VLA、MPC、nuScenes、CARLA 等术语保持一致；模型名、数据集名和引用键不要翻译。
+10. 不要输出“翻译如下”、总结、解释或本片段之外的内容。
 
 原文片段（第 ${index}/${total}）：
 ${chunk}`;

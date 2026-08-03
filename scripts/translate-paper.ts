@@ -1,12 +1,11 @@
 import Database from "better-sqlite3";
 import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { normalizeTranslatedMarkdown, splitTranslationChunks, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates } from "../src/lib/paper-translation";
+import { normalizeTranslatedMarkdown, protectStructuredMarkdown, restoreStructuredMarkdown, splitTranslationChunks, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, validateTranslatedMarkdown } from "../src/lib/paper-translation";
 
 const execFileAsync = promisify(execFile);
 let dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
@@ -27,7 +26,43 @@ function loadLocalEnv() {
   }
 }
 
-async function extractPdf(urls: string[]) {
+function parserPythonCandidates() {
+  return [...new Set([
+    process.env.TRANSLATION_PYTHON_BIN,
+    path.join(process.cwd(), ".venv-atlas-parser", "bin", "python"),
+    process.env.PYTHON || "",
+    "python3.14",
+    "python3.13",
+    "python3.12",
+    "python3.11",
+    "python3.10",
+    "python3",
+  ].filter((value): value is string => Boolean(value)))];
+}
+
+async function parseStructuredPdf(pdfPath: string, outputDirectory: string) {
+  const parserMode = (process.env.TRANSLATION_PARSER || "auto").toLowerCase();
+  if (parserMode === "legacy" || parserMode === "pdftotext") return null;
+  const parserScript = path.join(process.cwd(), "scripts", "parse-paper.py");
+  let lastError = "Docling 解析器不可用";
+  for (const python of parserPythonCandidates()) {
+    try {
+      const { stdout } = await execFileAsync(python, [parserScript, "--pdf", pdfPath, "--output", outputDirectory], { maxBuffer: 16 * 1024 * 1024, timeout: 10 * 60 * 1000 });
+      const manifestLine = stdout.trim().split("\n").at(-1);
+      const manifest = manifestLine ? JSON.parse(manifestLine) : null;
+      const markdown = await fs.readFile(path.join(outputDirectory, "source_structured.md"), "utf8");
+      if (!manifest || !markdown.trim()) throw new Error("Docling 没有生成结构化 Markdown");
+      return { markdown, parser: "docling", manifest };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  if (parserMode === "docling") throw new Error(lastError);
+  console.warn(`  Docling 未启用，回退 pdftotext：${lastError}`);
+  return null;
+}
+
+async function extractPdf(urls: string[], outputDirectory: string) {
   let lastError = "没有找到可解析的 PDF";
   for (const url of [...new Set(urls.filter(Boolean))]) {
     try {
@@ -35,12 +70,12 @@ async function extractPdf(urls: string[]) {
       if (!response.ok) { lastError = `PDF 请求失败：${response.status}`; continue; }
       const bytes = Buffer.from(await response.arrayBuffer());
       if (!bytes.subarray(0, 4).toString().startsWith("%PDF")) { lastError = `数据源不是 PDF：${url}（可能是 DOI 跳转页）`; continue; }
-      const temporaryPath = path.join(os.tmpdir(), `ai-research-atlas-translation-${Date.now()}.pdf`);
-      await fs.writeFile(temporaryPath, bytes);
-      try {
-        const result = await execFileAsync("pdftotext", ["-layout", temporaryPath, "-"], { maxBuffer: 64 * 1024 * 1024 });
-        return { text: result.stdout, url };
-      } finally { await fs.unlink(temporaryPath).catch(() => undefined); }
+      const pdfPath = path.join(outputDirectory, "source.pdf");
+      await fs.writeFile(pdfPath, bytes);
+      const structured = await parseStructuredPdf(pdfPath, outputDirectory);
+      if (structured) return { text: structured.markdown, url, pdfPath, parser: structured.parser, manifest: structured.manifest };
+      const result = await execFileAsync("pdftotext", ["-layout", pdfPath, "-"], { maxBuffer: 64 * 1024 * 1024 });
+      return { text: result.stdout, url, pdfPath, parser: "pdftotext", manifest: null };
     } catch (error) { lastError = error instanceof Error ? error.message : String(error); }
   }
   throw new Error(lastError);
@@ -92,9 +127,9 @@ async function main() {
     ? db.prepare("SELECT pdf_url, arxiv_id FROM papers WHERE normalized_title = ? AND id != ?").all(paper.normalized_title, paper.id) as { pdf_url?: string | null; arxiv_id?: string | null }[]
     : [];
   const candidates = translationUrlCandidates(paper, alternatives);
-  const extracted = await extractPdf(candidates);
+  const extracted = await extractPdf(candidates, outputDirectory);
   const chunks = splitTranslationChunks(extracted.text);
-  await fs.writeFile(path.join(outputDirectory, "source.md"), `# ${paper.title}\n\n来源：${extracted.url}\n\n---\n\n${extracted.text}\n`, "utf8");
+  await fs.writeFile(path.join(outputDirectory, "source.md"), `# ${paper.title}\n\n来源：${extracted.url}\n\n解析器：${extracted.parser}\n\n---\n\n${extracted.text}\n`, "utf8");
   const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
   const glossary = existsSync(terminologyPath) ? await fs.readFile(terminologyPath, "utf8") : "# 术语表\n\n以论文原文为准。\n";
   await fs.writeFile(path.join(outputDirectory, "glossary.md"), glossary, "utf8");
@@ -106,14 +141,17 @@ async function main() {
     while (true) {
       const index = cursor++;
       if (index >= chunks.length) return;
-      results[index] = await translateChunk(chunks[index], index + 1, chunks.length);
+      const protectedChunk = protectStructuredMarkdown(chunks[index]);
+      const translated = await translateChunk(protectedChunk.text, index + 1, chunks.length);
+      results[index] = restoreStructuredMarkdown(translated, protectedChunk.protectedTokens);
       console.log(`translated ${index + 1}/${chunks.length}`);
     }
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, () => worker()));
   const translated = `# ${paper.title}\n\n> 原文：${extracted.url}\n\n---\n\n${results.map((result) => normalizeTranslatedMarkdown(result)).join("\n\n")}`;
+  const validationIssues = validateTranslatedMarkdown(extracted.text, translated);
   await fs.writeFile(path.join(outputDirectory, "translation_zh.md"), `${translated}\n`, "utf8");
-  await fs.writeFile(path.join(outputDirectory, "translation_report.md"), `# 翻译报告\n\n- 模型：${model}\n- 原文字符数：${extracted.text.length}\n- 译文字符数：${translated.length}\n- 分块数：${chunks.length}\n- 并发数：${concurrency}\n- 说明：译文保留论文中的公式、代码、引用键、数据集名和模型名；使用前请结合原文核对。\n`, "utf8");
+  await fs.writeFile(path.join(outputDirectory, "translation_report.md"), `# 翻译报告\n\n- 模型：${model}\n- PDF 解析器：${extracted.parser}\n- 原文字符数：${extracted.text.length}\n- 译文字符数：${translated.length}\n- 分块数：${chunks.length}\n- 并发数：${concurrency}\n- 图片资源：${extracted.manifest?.assets?.length ?? 0}\n- 结构校验：${validationIssues.length ? validationIssues.join("；") : "通过"}\n- 说明：译文保留论文中的公式、代码、引用键、数据集名和模型名；使用前请结合原文核对。\n`, "utf8");
   db.prepare("UPDATE paper_translations SET status = 'completed', translated_chars = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?").run(translated.length, paperId);
   db.close();
 }

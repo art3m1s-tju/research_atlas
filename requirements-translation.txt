@@ -1,0 +1,3 @@
+# Optional local scientific-PDF parser used by the full-text translation worker.
+# Python 3.10-3.13 is recommended by the upstream project.
+docling>=2.43,<3

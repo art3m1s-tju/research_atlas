@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Convert a scientific PDF into structured Markdown and local image assets.
+
+Docling is intentionally optional. The Node translation worker uses this script
+when the local parser environment is installed and falls back to pdftotext when
+it is not.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pdf", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+
+    try:
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling_core.types.doc.base import ImageRefMode
+    except ImportError as error:
+        print(f"Docling 未安装：{error}", file=sys.stderr)
+        return 12
+
+    output_dir = Path(args.output).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    assets_dir = output_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    options = PdfPipelineOptions(
+        generate_picture_images=True,
+        do_ocr=os.getenv("TRANSLATION_ENABLE_OCR", "0") == "1",
+        do_formula_enrichment=os.getenv("TRANSLATION_ENABLE_FORMULA", "0") == "1",
+    )
+    converter = DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
+    )
+    result = converter.convert(str(Path(args.pdf).resolve()))
+    document = result.document
+    markdown_path = output_dir / "source_structured.md"
+    document.save_as_markdown(
+        markdown_path,
+        image_mode=ImageRefMode.REFERENCED,
+        artifacts_dir=assets_dir,
+    )
+    markdown = markdown_path.read_text(encoding="utf-8")
+    markdown = markdown.replace(f"{assets_dir.as_posix()}/", "assets/")
+    markdown = markdown.replace(f"{assets_dir}/", "assets/")
+    markdown_path.write_text(markdown, encoding="utf-8")
+
+    assets = [
+        str(path.relative_to(output_dir))
+        for path in sorted(assets_dir.rglob("*"))
+        if path.is_file()
+    ]
+    manifest = {
+        "parser": "docling",
+        "parser_version": getattr(__import__("docling"), "__version__", "unknown"),
+        "source_pdf": str(Path(args.pdf).resolve()),
+        "markdown": str(markdown_path.relative_to(output_dir)),
+        "assets": assets,
+    }
+    (output_dir / "document.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(json.dumps(manifest, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

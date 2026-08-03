@@ -118,7 +118,7 @@ SYNC_REQUEST_RETRIES=2
 - 如果暂时没有配置 `DEEPSEEK_API_KEY`，收藏流程会退回本地关键词规则并明确标注，不会伪造 DeepSeek 结果。论文详情页也可以手动点击“DeepSeek 分类”重试。
 - 中文摘要与中文速览分开保存：中文摘要是英文摘要的忠实翻译，中文速览是压缩后的阅读提示。详情页缺少中文摘要时可点击“生成中文摘要”；成功结果写入 SQLite，后续不会重复调用。
 - Zotero 建议先导出 BibTeX，再在网页左侧“导入 Zotero/BibTeX”；导入的论文会作为兴趣样本参与后续推荐。
-- 详情页的“尝试解析 PDF 全文”使用本机 `pdftotext` 提取开放 PDF；没有 PDF 或解析失败时会回退到摘要级证据。
+- 详情页的“尝试解析 PDF 全文”使用本机结构化解析器提取开放 PDF；没有安装 Docling 时才回退到 `pdftotext` 和摘要级证据。
 - `DIGEST_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID` 都是可选配置；不配置时只生成本地 Markdown，不会发送外部消息。
 
 ## 同步论文
@@ -154,7 +154,17 @@ npm run summarize:papers
 
 分类接口使用结构化 JSON，要求模型返回主方向、辅助方向、置信度、中文理由、证据术语和可选的新方向建议。它不会根据模型自由发挥的会议、引用量或实验结果做分类。
 
-项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF、提取文本、按段落分块调用 DeepSeek，并把 `source.md`、`translation_zh.md`、`glossary.md` 和 `translation_report.md` 保存到 `data/translations/<paper-id>/`。翻译完成后可在 Atlas 内打开排版预览，支持标题、列表、表格、代码块和 KaTeX 公式，同时保留 Markdown 下载入口。翻译仍需要配置 DeepSeek、系统安装 `pdftotext`，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
+项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF，优先使用 Docling 提取标题层级、阅读顺序、公式、图片和表格，再由 DeepSeek 按结构化片段翻译。图片资源会保存到 `data/translations/<paper-id>/assets/` 并直接在中文阅读页渲染；译文、原文、解析清单和报告分别保存为 `translation_zh.md`、`source.md`、`document.json` 和 `translation_report.md`。翻译仍需要配置 DeepSeek，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
+
+### 安装高质量 PDF 解析器
+
+首次需要全文翻译时，在项目目录执行一次：
+
+```bash
+npm run setup:translation-parser
+```
+
+该命令会创建独立的 `.venv-atlas-parser` 并安装 Docling，不影响 Node 依赖。没有安装 Docling 时系统仍可运行，但会退回 `pdftotext`，图片和复杂表格无法可靠恢复。`TRANSLATION_PARSER=docling` 可强制要求结构化解析，`TRANSLATION_PARSER=auto` 为默认值。公式密集型论文可以把 `TRANSLATION_ENABLE_FORMULA=1` 打开；它会启用本地公式模型，CPU 上会明显变慢。
 
 网页中的“同步最新论文”按钮和每日任务也调用同一个多源同步器：
 
