@@ -1188,6 +1188,9 @@ export function validateTranslatedMarkdown(source: string, translated: string, e
 
 function equationLike(line: string) {
   if (/<\/?(?:table|thead|tbody|tfoot|tr|td|th|div|img)\b/i.test(line)) return false;
+  // Bibliography entries and URLs can contain "=" (e.g. ?journalCode=jgcd) but
+  // must never be promoted to display math.
+  if (/https?:|doi\.org|arXiv|\[(?:Online|在线)\]|et al\.|vol\.\s*\d|pp\.\s*\d/i.test(line)) return false;
   const hasMathCommand = /\\(?:frac|begin|end|text|mathbb|mathbf|mathcal|left|right|tag|operatorname|exp|sum|int|sqrt|cdot|top|hat|tilde|Delta|lambda|in|sim|partial|nabla|geq|leq)/.test(line);
   const hasAssignment = /=/.test(line);
   const hasChineseSentence = /[\u4e00-\u9fff]{8,}/.test(line);

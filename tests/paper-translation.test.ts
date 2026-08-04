@@ -396,6 +396,13 @@ test("validator does not flag a formula immediately followed by a table as wrapp
   assert.equal(issues.some((issue) => issue.includes("图片被错误包裹在公式块中")), false);
 });
 
+test("normalization does not promote reference lines with URL query equals into math", () => {
+  const reference = "[293] S. Hosseini and M. Mesbahi, \"Energy-aware aerial surveillance,\" J. Guid., Control, Dyn., vol. 39, no. 9, pp. 1980–1993, 2016. [在线]。可访问：http://dx.doi.org/10.2514/1.G001737?journalCode=jgcd";
+  const normalized = normalizeTranslatedMarkdown(reference);
+  assert.doesNotMatch(normalized, /\$\$/);
+  assert.match(normalized, /journalCode=jgcd/);
+});
+
 test("translation cache hash changes with model, parser settings, and glossary", () => {
   const paper = { title: "Paper", abstract: "Abstract", pdf_url: "https://example.com/paper.pdf", doi: "10.1/example" };
   const baseline = translationSourceHash(paper, { model: "model-a", parser: "docling", formulaEnabled: "1", glossary: "A" });
