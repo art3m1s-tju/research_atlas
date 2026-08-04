@@ -432,6 +432,15 @@ test("normalization does not promote reference lines with URL query equals into 
   assert.match(normalized, /journalCode=jgcd/);
 });
 
+test("normalization does not promote table notes with equals signs into math", () => {
+  const note = "注：MS = 营销战略；CB = 消费者行为；P = 公共政策。";
+  const normalized = normalizeTranslatedMarkdown(note);
+  assert.doesNotMatch(normalized, /\$\$/);
+  assert.match(normalized, /MS = 营销战略/);
+  const equation = normalizeTranslatedMarkdown("x = a + b");
+  assert.match(equation, /\$\$/);
+});
+
 test("translation cache hash changes with model, parser settings, and glossary", () => {
   const paper = { title: "Paper", abstract: "Abstract", pdf_url: "https://example.com/paper.pdf", doi: "10.1/example" };
   const baseline = translationSourceHash(paper, { model: "model-a", parser: "docling", formulaEnabled: "1", glossary: "A" });

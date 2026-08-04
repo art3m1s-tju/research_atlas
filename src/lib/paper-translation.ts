@@ -1272,8 +1272,10 @@ function equationLike(line: string) {
   if (/https?:|doi\.org|arXiv|\[(?:Online|在线)\]|et al\.|vol\.\s*\d|pp\.\s*\d/i.test(line)) return false;
   const hasMathCommand = /\\(?:frac|begin|end|text|mathbb|mathbf|mathcal|left|right|tag|operatorname|exp|sum|int|sqrt|cdot|top|hat|tilde|Delta|lambda|in|sim|partial|nabla|geq|leq)/.test(line);
   const hasAssignment = /=/.test(line);
-  const hasChineseSentence = /[\u4e00-\u9fff]{8,}/.test(line);
-  return !hasChineseSentence && (hasMathCommand || hasAssignment);
+  // Any Chinese character means this is prose (e.g. "注：MS = 营销战略"), not
+  // a bare equation line that normalization should promote to display math.
+  const hasChinese = /[\u4e00-\u9fff]/.test(line);
+  return !hasChinese && (hasMathCommand || hasAssignment);
 }
 
 function cleanMathBody(line: string) {
