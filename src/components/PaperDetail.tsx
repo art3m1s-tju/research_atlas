@@ -39,7 +39,28 @@ type RelatedPaper = {
 };
 
 type EvidenceItem = { type: string; label: string; content: string; source: string; confidence: string };
-type TranslationState = { status: "pending" | "running" | "completed" | "failed"; source_url?: string | null; error?: string | null; previewUrl?: string | null; markdownUrl?: string | null; source_chars?: number; translated_chars?: number; updated_at?: string };
+type TranslationState = { status: "pending" | "running" | "completed" | "needs_review" | "failed"; source_url?: string | null; error?: string | null; previewUrl?: string | null; markdownUrl?: string | null; candidateUrl?: string | null; source_chars?: number; translated_chars?: number; progress_phase?: string; progress_current?: number; progress_total?: number; progress_message?: string | null; started_at?: string | null; updated_at?: string };
+
+function translationProgressPercent(translation: TranslationState) {
+  if (translation.status === "completed" || translation.status === "needs_review") return 100;
+  if (translation.status === "failed") return 0;
+  if (translation.progress_phase === "translating" && translation.progress_total) {
+    return Math.min(92, Math.round(25 + 67 * ((translation.progress_current || 0) / translation.progress_total)));
+  }
+  return ({ queued: 5, starting: 8, downloading: 12, parsing: 22, extracting: 22, source_quality_check: 26, binding_review: 32, validating: 96 } as Record<string, number>)[translation.progress_phase || "queued"] || 5;
+}
+
+function translationIsActive(translation: TranslationState | null) {
+  if (!translation || !["pending", "running"].includes(translation.status)) return false;
+  return !String(translation.progress_message || "").startsWith("旧缓存已失效");
+}
+
+function translationCanAutoRepair(translation: TranslationState | null) {
+  const error = String(translation?.error || "");
+  return translation?.status === "needs_review"
+    && error.includes("源文档解析未通过质量门禁")
+    && /(重复 OCR|页面截断片段)/.test(error);
+}
 
 export default function PaperDetail({ id }: { id: string }) {
   const canonicalId = decodePaperId(id);
@@ -78,13 +99,13 @@ export default function PaperDetail({ id }: { id: string }) {
 
   const translationStatus = translation?.status;
   useEffect(() => {
-    if (!translationStatus || !["pending", "running"].includes(translationStatus)) return;
+    if (!translationStatus || !translationIsActive(translation)) return;
     const timer = window.setInterval(async () => {
       const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/translation`, { cache: "no-store" });
       if (response.ok) setTranslation((await response.json()).translation || null);
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [canonicalId, translationStatus]);
+  }, [canonicalId, translationStatus, translation?.progress_message]);
 
   async function feedback(action: string, payload: Record<string, unknown> = {}) {
     const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/feedback`, {
@@ -139,10 +160,10 @@ export default function PaperDetail({ id }: { id: string }) {
   async function startTranslation() {
     setTranslationStarting(true);
     try {
-      const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/translation`, { method: "POST" });
+      const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/translation`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force: translation?.status === "completed" || translation?.status === "needs_review" }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "翻译任务启动失败");
-      setTranslation((current) => ({ ...(current || {}), status: data.status || "pending", error: null } as TranslationState));
+      setTranslation((current) => ({ ...(current || {}), status: data.status || "pending", error: null, progress_message: data.message || "任务已进入队列，等待翻译进程启动" } as TranslationState));
     } catch (error) {
       setTranslation({ status: "failed", error: error instanceof Error ? error.message : "翻译任务启动失败" });
     } finally { setTranslationStarting(false); }
@@ -184,19 +205,24 @@ export default function PaperDetail({ id }: { id: string }) {
           </button>
           {paper.pdfUrl && <a href={paper.pdfUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-blue-600 px-3 py-2 text-sm text-white">打开 PDF</a>}
           {paper.doi && <a href={paper.doi} target="_blank" rel="noreferrer" className="rounded-lg border px-3 py-2 text-sm">打开 DOI</a>}
-          <button type="button" onClick={() => classifyPaper()} disabled={classifying} className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-700 hover:bg-sky-100 disabled:opacity-50">{classifying ? "分类中..." : "DeepSeek 分类"}</button>
-          <button type="button" onClick={startTranslation} disabled={translationStarting || translation?.status === "pending" || translation?.status === "running"} className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-700 hover:bg-indigo-100 disabled:opacity-50">{translationStarting || translation?.status === "pending" || translation?.status === "running" ? "翻译处理中..." : translation?.status === "completed" ? "重新翻译" : "翻译全文"}</button>
+          <button type="button" onClick={() => classifyPaper()} disabled={classifying} className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-700 hover:bg-sky-100 disabled:opacity-50">{classifying ? "分类中..." : "智能分类"}</button>
+          <button type="button" onClick={startTranslation} disabled={translationStarting || translationIsActive(translation)} className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-700 hover:bg-indigo-100 disabled:opacity-50">{translationStarting || translationIsActive(translation) ? "翻译处理中..." : translationCanAutoRepair(translation) ? "自动修复并重翻译" : translation?.status === "completed" || translation?.status === "needs_review" || translation?.progress_message?.startsWith("旧缓存已失效") ? "重新翻译" : "翻译全文"}</button>
         </div>
         {classification && <ClassificationPanel result={classification} provider={classificationProvider} message={classificationMessage} onCreateDirection={() => classifyPaper(true)} creating={creatingDirection} />}
         {!classification && classificationMessage && <p className="mt-3 text-xs text-amber-700">{classificationMessage}</p>}
         {translation && <section className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/60 p-4 text-sm">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="font-semibold text-indigo-900">中文翻译工作流</h2>
-            <span className="text-xs text-indigo-700">{translation.status === "completed" ? "已完成" : translation.status === "failed" ? "失败" : translation.status === "running" ? "翻译中" : "排队中"}</span>
+            <span className="text-xs text-indigo-700">{translation.status === "completed" ? "已完成" : translationCanAutoRepair(translation) ? "可自动修复" : translation.status === "needs_review" ? "需人工复核" : translation.status === "failed" ? "失败" : translation.status === "running" ? "翻译中" : "排队中"}</span>
           </div>
           {translation.status === "completed" && translation.previewUrl && <div className="mt-2 flex flex-wrap gap-2"><a href={translation.previewUrl} className="inline-block rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700">打开中文译文预览</a>{translation.markdownUrl && <a href={translation.markdownUrl} className="inline-block rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-50">下载 Markdown</a>}</div>}
+          {translation.status === "needs_review" && <div className="mt-2"><p className="text-xs leading-5 text-amber-800">{translationCanAutoRepair(translation) ? "检测到可自动修复的源 OCR 异常，点击上方按钮重新解析并翻译。" : `质量校验未通过：${translation.error || "请结合原文检查章节、公式和表格。"}`}</p>{translationCanAutoRepair(translation) && translation.error && <p className="mt-1 text-xs leading-5 text-amber-700">诊断：{translation.error}</p>}{translation.candidateUrl && <a href={translation.candidateUrl} className="mt-2 inline-block rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-50">下载待复核译文</a>}</div>}
           {translation.status === "failed" && <p className="mt-2 text-xs leading-5 text-red-700">{translation.error || "翻译失败，请检查 DeepSeek 配置和 PDF 是否可访问。"}</p>}
-          {(translation.status === "pending" || translation.status === "running") && <p className="mt-2 text-xs text-indigo-800">任务在后台执行，页面会自动刷新状态；长论文可能需要几分钟。</p>}
+          {translationIsActive(translation) && <div className="mt-3">
+            <div className="flex items-center justify-between gap-3 text-xs text-indigo-800"><span>{translation.progress_message || "任务在后台执行，页面会自动刷新状态"}</span><span className="shrink-0 font-medium">{translation.progress_total ? `${translation.progress_current || 0}/${translation.progress_total}` : `${translationProgressPercent(translation)}%`}</span></div>
+            <div className="mt-2 h-2 overflow-hidden rounded-full bg-indigo-100" role="progressbar" aria-label="论文翻译进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={translationProgressPercent(translation)}><div className={`h-full rounded-full bg-indigo-500 transition-all duration-500 ${translation.progress_total ? "" : "animate-pulse"}`} style={{ width: `${translationProgressPercent(translation)}%` }} /></div>
+            <div className="mt-2 flex flex-wrap justify-between gap-2 text-[11px] text-indigo-600"><span>下载 PDF → 结构解析 → 分块翻译 → 质量校验</span>{translation.updated_at && <span>更新于 {new Date(`${translation.updated_at.replace(" ", "T")}Z`).toLocaleTimeString("zh-CN", { hour12: false })}</span>}</div>
+          </div>}
         </section>}
 
         {paper.summaryZh && <section className="mt-8 rounded-lg bg-amber-50 p-5"><h2 className="font-semibold text-amber-900">中文速览</h2><p className="mt-2 leading-7 text-gray-800">{paper.summaryZh}</p></section>}

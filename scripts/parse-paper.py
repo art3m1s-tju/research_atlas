@@ -47,7 +47,7 @@ def main() -> int:
         images_scale=image_scale,
         generate_picture_images=True,
         do_ocr=os.getenv("TRANSLATION_ENABLE_OCR", "0") == "1",
-        do_formula_enrichment=os.getenv("TRANSLATION_ENABLE_FORMULA", "0") == "1",
+        do_formula_enrichment=os.getenv("TRANSLATION_ENABLE_FORMULA", "1") == "1",
     )
     converter = DocumentConverter(
         format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)}
@@ -73,6 +73,7 @@ def main() -> int:
     manifest = {
         "parser": "docling",
         "parser_version": getattr(__import__("docling"), "__version__", "unknown"),
+        "formula_enrichment": options.do_formula_enrichment,
         "source_pdf": str(Path(args.pdf).resolve()),
         "markdown": str(markdown_path.relative_to(output_dir)),
         "assets": assets,

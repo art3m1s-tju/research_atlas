@@ -1,0 +1,11 @@
+{
+  "translation_tests_passed": 7,
+  "translation_tests_failed": 0,
+  "typescript_check": "passed",
+  "production_build": "passed",
+  "external_translation_requests": 0,
+  "worldrft_new_source_chunks": 41,
+  "worldrft_max_chunk_chars": 8294,
+  "skyjepa_new_source_chunks": 33,
+  "skyjepa_max_chunk_chars": 8944
+}

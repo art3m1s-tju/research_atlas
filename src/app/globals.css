@@ -24,9 +24,33 @@
   }
 }
 
+/* Keep the paper typography independent, while giving Atlas controls a readable
+   desktop scale instead of relying on tiny utility defaults. */
+.atlas-ui { font-size: 1rem; }
+.atlas-ui .text-\[10px\] { font-size: 0.84rem; }
+.atlas-ui .text-\[11px\] { font-size: 0.89rem; }
+.atlas-ui .text-xs { font-size: 0.94rem; }
+.atlas-ui .text-sm { font-size: 1rem; }
+.atlas-ui .text-base { font-size: 1.08rem; }
+.atlas-ui .text-lg { font-size: 1.28rem; }
+.atlas-ui .text-xl { font-size: 1.45rem; }
+.atlas-ui .text-2xl { font-size: 1.75rem; }
+.atlas-ui .text-3xl { font-size: 2.35rem; }
+
+@media (max-width: 640px) {
+  .atlas-ui { font-size: 1rem; }
+  .atlas-ui .text-\[10px\] { font-size: 0.82rem; }
+  .atlas-ui .text-\[11px\] { font-size: 0.88rem; }
+  .atlas-ui .text-xs { font-size: 0.94rem; }
+  .atlas-ui .text-sm { font-size: 1rem; }
+  .atlas-ui .text-lg { font-size: 1.2rem; }
+  .atlas-ui .text-xl { font-size: 1.35rem; }
+}
+
 .translation-prose {
   color: #1f2937;
-  line-height: 1.85;
+  font-size: 1.16rem;
+  line-height: 1.9;
   overflow-wrap: anywhere;
 }
 
@@ -40,10 +64,21 @@
   margin: 2rem 0 0.75rem;
 }
 
-.translation-prose h1 { font-size: 1.8rem; }
-.translation-prose h2 { font-size: 1.45rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.35rem; }
-.translation-prose h3 { font-size: 1.2rem; }
+.translation-prose h1 { font-size: 2.2rem; }
+.translation-prose h2 { font-size: 1.9rem; border-bottom: 1px solid #dbe3ef; padding-bottom: 0.55rem; margin-top: 2.8rem; }
+.translation-prose h3 { font-size: 1.55rem; color: #1e3a5f; margin-top: 2rem; }
+.translation-prose h4 { font-size: 1.28rem; color: #475569; margin-top: 1.5rem; }
 .translation-prose p { margin: 0.9rem 0; }
+.translation-prose .paper-caption {
+  display: block;
+  margin: 0.45rem auto 1.6rem;
+  max-width: 90%;
+  color: #526174;
+  font-size: 0.98rem;
+  line-height: 1.6;
+  text-align: center;
+}
+.translation-prose .paper-caption strong { color: #1e3a5f; font-size: 0.92em; font-weight: 800; }
 .translation-prose ul,
 .translation-prose ol { margin: 0.9rem 0; padding-left: 1.5rem; }
 .translation-prose ul { list-style: disc; }
@@ -53,10 +88,16 @@
 .translation-prose code { border-radius: 0.25rem; background: #f3f4f6; padding: 0.12rem 0.3rem; font-size: 0.9em; }
 .translation-prose pre { overflow-x: auto; border-radius: 0.6rem; background: #111827; color: #f9fafb; margin: 1rem 0; padding: 1rem; }
 .translation-prose pre code { background: transparent; padding: 0; }
-.translation-prose table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; margin: 1rem 0; }
+.translation-prose .katex { overflow-wrap: normal; font-size: 1.05em; }
+.translation-prose .katex-display { display: block; overflow-x: auto; overflow-y: hidden; padding: 0.7rem 0; margin: 1.2rem auto; text-align: center; }
+.translation-prose .paper-table-wrap { width: 100%; overflow-x: auto; margin: 1.5rem 0 0.35rem; }
+.translation-prose table { width: max-content; min-width: 72%; border-collapse: collapse; margin: 0 auto; font-size: 1.04rem; }
 .translation-prose th,
-.translation-prose td { border: 1px solid #d1d5db; padding: 0.5rem 0.7rem; text-align: left; min-width: 7rem; }
-.translation-prose th { background: #f3f4f6; font-weight: 700; }
+.translation-prose td { border: 1px solid #d1d5db; padding: 0.62rem 0.82rem; min-width: 7rem; vertical-align: middle; }
+.translation-prose th { background: #f3f4f6; font-weight: 750; text-align: center; }
+.translation-prose td { text-align: left; }
+.translation-prose .paper-inline-math { white-space: nowrap; }
+.translation-prose .paper-formula-fallback { color: inherit; background: #fff7ed; border-radius: 0.25rem; padding: 0.08rem 0.25rem; }
 .translation-prose img {
   display: block;
   width: 100%;
@@ -69,3 +110,26 @@
   cursor: zoom-in;
 }
 .translation-prose .paper-image-button { display: block; width: 100%; padding: 0; border: 0; background: transparent; }
+
+.paper-title { text-align: center; font-size: clamp(2.25rem, 4.5vw, 3.45rem); line-height: 1.16; }
+.paper-meta { text-align: center; }
+.paper-authors { margin: 0; color: #334155; font-size: 1.12rem; line-height: 1.75; }
+.paper-author sup { margin-left: 0.08rem; color: #475569; font-size: 0.68em; vertical-align: super; }
+.paper-meta-label { margin-right: 0.45rem; color: #64748b; font-size: 0.78rem; letter-spacing: 0.08em; }
+.paper-affiliations { margin: 0.45rem auto 0; max-width: 48rem; color: #64748b; font-size: 0.78rem; line-height: 1.55; }
+.paper-affiliation { margin: 0.12rem 0; }
+.paper-affiliation sup { display: inline-block; min-width: 1rem; margin-right: 0.25rem; color: #475569; font-size: 0.72rem; }
+.paper-publication { margin: 0.25rem 0 0; color: #94a3b8; font-size: 0.82rem; }
+
+.paper-reader header > div:first-child a { font-size: 1rem; }
+.paper-reader header > div:first-child button,
+.paper-reader header > div:first-child div a { font-size: 0.92rem; }
+
+@media (max-width: 640px) {
+  .translation-prose { font-size: 1.08rem; }
+  .translation-prose h1 { font-size: 1.85rem; }
+  .translation-prose h2 { font-size: 1.6rem; }
+  .translation-prose h3 { font-size: 1.35rem; }
+  .paper-title { font-size: 2rem; }
+  .paper-authors { font-size: 1rem; }
+}

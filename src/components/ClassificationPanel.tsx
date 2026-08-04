@@ -15,7 +15,7 @@ export default function ClassificationPanel({ result, provider, message, onCreat
   return (
     <div className="mt-4 rounded-lg border border-sky-100 bg-sky-50/70 p-4 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h4 className="font-semibold text-sky-900">DeepSeek 分类建议</h4>
+        <h4 className="font-semibold text-sky-900">智能分类建议</h4>
         <span className="text-xs text-sky-700">{provider === "heuristic" ? "本地规则" : "DeepSeek"}</span>
       </div>
       <p className="mt-2 text-slate-800">系统推荐：<strong>{result.primary_label || result.primary_direction || "暂无合适的现有方向"}</strong> · 置信度 {Math.round(result.confidence * 100)}%</p>

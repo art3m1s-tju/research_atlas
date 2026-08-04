@@ -14,7 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="zh-CN">
-      <body className="font-sans">{children}</body>
+      <body className="atlas-ui font-sans">{children}</body>
     </html>
   );
 }

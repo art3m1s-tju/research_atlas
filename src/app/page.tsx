@@ -218,7 +218,7 @@ export default function Home() {
       />
 
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-7xl px-4 py-5 sm:px-8 sm:py-8">
+        <div className="mx-auto max-w-[1440px] px-4 py-5 sm:px-8 sm:py-8">
           {/* Header */}
           <div className="mb-8">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -322,7 +322,7 @@ export default function Home() {
 
           {/* Papers Grid */}
           {loading ? (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               {[...Array(6)].map((_, i) => (
                 <div key={i} className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 animate-pulse">
                   <div className="h-4 bg-gray-200 rounded w-24 mb-3"></div>
@@ -358,7 +358,7 @@ export default function Home() {
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               {papers.map((paper) => (
                 <PaperCard key={paper.id} paper={paper} />
               ))}

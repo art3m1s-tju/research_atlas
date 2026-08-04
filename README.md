@@ -115,7 +115,7 @@ SYNC_REQUEST_RETRIES=2
 - `.env.local` 和 `data/*.db` 已被 `.gitignore` 排除，不应提交密钥或本地数据库。
 - DeepSeek 配置后，`summarize:papers` 会用 `deepseek-v4-flash` 批量生成中文论文解读；默认并发 8，可通过 `SUMMARY_CONCURRENCY` 调整。
 - 新论文收藏后的分类使用 `DEEPSEEK_CLASSIFIER_MODEL`，默认 `deepseek-v4-flash`。分类 prompt 要求模型只能选择 Atlas 当前方向的 key，并根据标题、摘要和发表渠道判断；无法匹配时返回新方向名称和检索词建议。分类结果写入 `paper_classifications`，论文内容没有变化时不会重复调用模型。
-- 如果暂时没有配置 `DEEPSEEK_API_KEY`，收藏流程会退回本地关键词规则并明确标注，不会伪造 DeepSeek 结果。论文详情页也可以手动点击“DeepSeek 分类”重试。
+- 如果暂时没有配置 `DEEPSEEK_API_KEY`，收藏流程会退回本地关键词规则并明确标注，不会伪造 DeepSeek 结果。论文详情页也可以手动点击“智能分类”重试。
 - 中文摘要与中文速览分开保存：中文摘要是英文摘要的忠实翻译，中文速览是压缩后的阅读提示。详情页缺少中文摘要时可点击“生成中文摘要”；成功结果写入 SQLite，后续不会重复调用。
 - Zotero 建议先导出 BibTeX，再在网页左侧“导入 Zotero/BibTeX”；导入的论文会作为兴趣样本参与后续推荐。
 - 详情页的“尝试解析 PDF 全文”使用本机结构化解析器提取开放 PDF；没有安装 Docling 时才回退到 `pdftotext` 和摘要级证据。
@@ -150,21 +150,15 @@ npm run summarize:papers
 1. 优先查找同一论文的分类缓存；论文标题、摘要、年份或发表渠道变化后才重新分类。
 2. DeepSeek 只能从当前内置/自定义方向中选择 `primary_direction` 和辅助方向，避免把医学等无关论文硬塞进自动驾驶文件夹。
 3. 如果当前方向都不适合，页面显示“建议新建研究方向”，你点击确认后才会创建自定义方向并把论文放进去。
-4. 论文详情页的“DeepSeek 分类”按钮可以重新查看缓存结果；配置好 API Key 后可再次执行。
+4. 论文详情页的“智能分类”按钮可以重新查看缓存结果；配置好 API Key 后可再次执行。
 
 分类接口使用结构化 JSON，要求模型返回主方向、辅助方向、置信度、中文理由、证据术语和可选的新方向建议。它不会根据模型自由发挥的会议、引用量或实验结果做分类。
 
-项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF，优先使用 Docling 提取标题层级、阅读顺序、公式、图片和表格，再由 DeepSeek 按结构化片段翻译。图片资源会保存到 `data/translations/<paper-id>/assets/` 并直接在中文阅读页渲染；译文、原文、解析清单和报告分别保存为 `translation_zh.md`、`source.md`、`document.json` 和 `translation_report.md`。翻译仍需要配置 DeepSeek，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
+项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF，并调用 PaddleOCR-VL-1.6 云端 API 生成结构化 Markdown；本地 Docling 和 `pdftotext` 回退已禁用，云端解析失败时任务会显示具体错误。解析过程会按页显示进度，标题层级、阅读顺序、公式、图片和表格交给 DeepSeek 按章节片段翻译。图片资源会保存到 `data/translations/<paper-id>/assets/` 并直接在中文阅读页渲染；成功片段会缓存在 `chunks/` 中以支持断点续译。译文、原文、解析清单和报告分别保存为 `translation_zh.md`、`source.md`、`document.json` 和 `translation_report.md`。章节、公式、图片或表格校验失败时，任务会标记为“需人工复核”，不会报告为已完成。翻译仍需要配置 DeepSeek，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
 
-### 安装高质量 PDF 解析器
+### 配置云端 PDF 解析器
 
-首次需要全文翻译时，在项目目录执行一次：
-
-```bash
-npm run setup:translation-parser
-```
-
-该命令会创建独立的 `.venv-atlas-parser` 并安装 Docling，不影响 Node 依赖。没有安装 Docling 时系统仍可运行，但会退回 `pdftotext`，图片和复杂表格无法可靠恢复。`TRANSLATION_PARSER=docling` 可强制要求结构化解析，`TRANSLATION_PARSER=auto` 为默认值。公式密集型论文可以把 `TRANSLATION_ENABLE_FORMULA=1` 打开；它会启用本地公式模型，CPU 上会明显变慢。
+在 `.env.local` 中配置 `PADDLEOCR_ACCESS_TOKEN`。全文翻译固定使用 PaddleOCR-VL-1.6 云端解析，不会运行本地 Docling 或 `pdftotext`；云端服务不可用时任务会失败并保留具体网络错误，方便重试。图表语义审校优先使用 Qwen3-VL-Flash：配置 `QWEN_VL_API_KEY`（或 `DASHSCOPE_API_KEY`）、`QWEN_VL_API_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1` 和 `QWEN_VL_MODEL=qwen3-vl-flash` 后，Qwen 只接收 PaddleOCR 导出的裁剪图，DeepSeek 仍负责标题、正文和题注翻译；未配置 Qwen Key 时自动回退到 PaddleOCR-VL 的版面识别。
 
 网页中的“同步最新论文”按钮和每日任务也调用同一个多源同步器：
 

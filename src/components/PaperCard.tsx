@@ -87,7 +87,7 @@ export default function PaperCard({ paper }: { paper: Paper }) {
   if (userState.isHidden) return null;
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 sm:p-7 hover:shadow-md transition-shadow">
       <div className="flex items-center gap-2 mb-3">
         {dir && (
           <span
@@ -130,7 +130,7 @@ export default function PaperCard({ paper }: { paper: Paper }) {
 
       <p className="text-sm text-gray-600 mb-2 line-clamp-2">{paper.authors}</p>
 
-      <div className="flex items-center gap-2 text-sm text-gray-500 mb-3">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-gray-500 mb-3">
         <span>{paper.venue}</span>
         {paper.venue && <span>•</span>}
         <span>{paper.year}</span>

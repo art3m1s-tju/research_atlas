@@ -118,7 +118,7 @@ export async function POST(request: Request) {
     const appliedDirections = apply && classification.primary_direction ? applyDirections(db, paperId, classification, directions) : [];
     const created = createDirection && classification.new_direction ? createSuggestedDirection(db, paperId, classification.new_direction) : null;
     const directionLabels = Object.fromEntries(directions.map((direction) => [direction.key, direction.label]));
-    return NextResponse.json({ success: true, classification: { ...classification, primary_label: classification.primary_direction ? directionLabels[classification.primary_direction] : null, secondary_labels: classification.secondary_directions.map((key) => directionLabels[key] || key) }, appliedDirections, createdDirection: created, provider, cached: wasCached, model: provider === "deepseek" ? MODEL : null, message: provider === "heuristic" ? "未配置 DeepSeek，已使用本地规则；配置后重新分类可获得更准确结果。" : wasCached ? "使用已缓存的分类结果，未重复消耗模型额度。" : "已完成 DeepSeek 分类。" });
+    return NextResponse.json({ success: true, classification: { ...classification, primary_label: classification.primary_direction ? directionLabels[classification.primary_direction] : null, secondary_labels: classification.secondary_directions.map((key) => directionLabels[key] || key) }, appliedDirections, createdDirection: created, provider, cached: wasCached, model: provider === "deepseek" ? MODEL : null, message: provider === "heuristic" ? "未配置智能分类模型，已使用本地规则；配置后重新分类可获得更准确结果。" : wasCached ? "使用已缓存的分类结果，未重复消耗模型额度。" : "已完成智能分类。" });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 502 });
   } finally {

@@ -199,7 +199,7 @@ export default function Sidebar({
   }
 
   return (
-    <aside className={`${mobileOpen ? "fixed inset-y-0 left-0 z-40 flex w-72 shadow-xl" : "hidden md:flex md:w-64"} bg-white border-r border-gray-200 flex-col h-screen sticky top-0`}>
+    <aside className={`${mobileOpen ? "fixed inset-y-0 left-0 z-40 flex w-80 shadow-xl" : "hidden md:flex md:w-72"} bg-white border-r border-gray-200 flex-col h-screen sticky top-0`}>
       <div className="px-6 py-5 border-b border-gray-200">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-lg font-semibold text-gray-900">研究方向</h2>

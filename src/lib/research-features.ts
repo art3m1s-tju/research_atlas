@@ -87,9 +87,24 @@ export function ensureResearchFeatureSchema(db: Database.Database) {
       error TEXT,
       source_chars INTEGER NOT NULL DEFAULT 0,
       translated_chars INTEGER NOT NULL DEFAULT 0,
+      progress_phase TEXT NOT NULL DEFAULT 'queued',
+      progress_current INTEGER NOT NULL DEFAULT 0,
+      progress_total INTEGER NOT NULL DEFAULT 0,
+      progress_message TEXT,
+      started_at TEXT,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  const translationColumns = new Set((db.prepare("PRAGMA table_info(paper_translations)").all() as { name: string }[]).map((column) => column.name));
+  for (const [name, definition] of Object.entries({
+    progress_phase: "TEXT NOT NULL DEFAULT 'queued'",
+    progress_current: "INTEGER NOT NULL DEFAULT 0",
+    progress_total: "INTEGER NOT NULL DEFAULT 0",
+    progress_message: "TEXT",
+    started_at: "TEXT",
+  })) {
+    if (!translationColumns.has(name)) db.exec(`ALTER TABLE paper_translations ADD COLUMN ${name} ${definition}`);
+  }
 }
 
 export function paperFeatureColumns(db: Database.Database) {
