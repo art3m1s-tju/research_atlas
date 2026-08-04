@@ -328,6 +328,22 @@ test("semantic table-image decisions resolve a nearby table caption", () => {
   assert.equal(manifest.objects[0].captionNumber, 3);
 });
 
+test("semantic decisions resolve objects when the parser produced no captions", () => {
+  const source = "![Image](assets/figure-1.png)\n\n<table><tr><td>A</td></tr></table>";
+  const manifest = buildStructuredBindingManifest(source);
+  assert.equal(manifest.captions.length, 0);
+  assert.ok(manifest.ambiguous.length > 0);
+  applySemanticBindingDecisions(manifest, [
+    { id: "figure-001", semantic_kind: "figure", confidence: 0.99, reason: "视觉识别为图片" },
+    { id: "table-001", semantic_kind: "table", confidence: 0.99, reason: "原生表格" },
+  ]);
+  assert.equal(manifest.ambiguous.length, 0);
+
+  const partial = buildStructuredBindingManifest(source);
+  applySemanticBindingDecisions(partial, [{ id: "figure-001", semantic_kind: "figure", confidence: 0.99, reason: "视觉识别为图片" }]);
+  assert.ok(partial.ambiguous.includes("table-001"));
+});
+
 test("nearest mismatched caption is retained for semantic review instead of stealing a later caption", () => {
   const source = "Figure 1: OCR mislabeled table caption.\n\n<table><tr><td>A</td></tr></table>\n\nTable 2: Later table.\n\n<table><tr><td>B</td></tr></table>";
   const manifest = buildStructuredBindingManifest(source);

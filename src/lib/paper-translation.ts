@@ -627,6 +627,17 @@ export function applySemanticBindingDecisions(manifest: StructuredBindingManifes
     changed.add(object.id);
   }
 
+  // A parser run that produced zero captions has nothing to bind; a confident
+  // semantic decision (figure vs table) is then sufficient to publish. Without
+  // this branch, every object would remain ambiguous and block the paper.
+  if (changed.size > 0 && manifest.captions.length === 0) {
+    for (const object of manifest.objects) {
+      if (changed.has(object.id)) object.ambiguous = false;
+    }
+    manifest.ambiguous = manifest.objects.filter((object) => object.ambiguous).map((object) => object.id);
+    return manifest;
+  }
+
   // When semantic review covered the document and the parser produced a
   // one-to-one object/caption sequence, source order is a safer binding than
   // model-provided caption IDs. This handles OCR labels such as Figure 1 on a
