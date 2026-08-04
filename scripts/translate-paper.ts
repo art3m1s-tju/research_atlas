@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
 import { annotateStructuredBindings, applySemanticBindingDecisions, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
+import { fetchWithRetry } from "../src/lib/resilient-fetch";
 
 const PADDLEOCR_DEFAULT_BASE_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
 const PADDLEOCR_DEFAULT_MODEL = "PaddleOCR-VL-1.6";
@@ -43,29 +44,16 @@ function networkErrorDetail(error: unknown) {
   return [...new Set(details)].join("；");
 }
 
-function safeToRetrySubmission(error: unknown) {
-  const cause = (error as Error & { cause?: { code?: string } })?.cause;
-  return ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"].includes(cause?.code || "");
-}
-
 async function paddleOcrFetch(url: string, init: RequestInit, action: string, attempts = 3) {
-  let lastError: unknown;
-  const method = String(init.method || "GET").toUpperCase();
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      const response = await fetch(url, init);
-      const retryableStatus = method !== "POST" && (response.status === 429 || response.status >= 500);
-      if (!retryableStatus || attempt === attempts) return response;
-      await response.arrayBuffer().catch(() => null);
-      lastError = new Error(`HTTP ${response.status}`);
-    } catch (error) {
-      lastError = error;
-      const retryable = method !== "POST" || safeToRetrySubmission(error);
-      if (!retryable || attempt === attempts) throw new Error(`PaddleOCR ${action}网络请求失败：${networkErrorDetail(error)}`, { cause: error });
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1200 * attempt));
-  }
-  throw new Error(`PaddleOCR ${action}网络请求失败：${networkErrorDetail(lastError)}`, { cause: lastError });
+  return fetchWithRetry(url, init, {
+    attempts,
+    timeoutMs: 60000,
+    retryPost: String(init.method || "GET").toUpperCase() === "POST",
+    retryStatusOnPost: false,
+    onRetry: ({ attempt, error, status, delayMs }) => {
+      console.warn(`  PaddleOCR ${action}第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
+    },
+  });
 }
 
 function safeAssetName(value: string, pageIndex: number, assetIndex: number) {
@@ -138,7 +126,7 @@ async function reviewVisualAssetWithQwen(id: string, assetPath: string, outputDi
   const modelName = process.env.QWEN_VL_MODEL || "qwen3-vl-flash";
   const bytes = await fs.readFile(path.join(outputDirectory, assetPath));
   const mime = /\.png$/i.test(assetPath) ? "image/png" : /\.webp$/i.test(assetPath) ? "image/webp" : "image/jpeg";
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const response = await fetchWithRetry(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -154,7 +142,14 @@ async function reviewVisualAssetWithQwen(id: string, assetPath: string, outputDi
         ] },
       ],
     }),
-    signal: AbortSignal.timeout(30000),
+  }, {
+    attempts: 2,
+    timeoutMs: 30000,
+    retryPost: true,
+    retryStatusOnPost: true,
+    onRetry: ({ attempt, error, status, delayMs }) => {
+      console.warn(`  Qwen3-VL 视觉审校第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
+    },
   });
   const text = await response.text();
   if (!response.ok) throw new Error(`Qwen3-VL 视觉审校失败（HTTP ${response.status}）：${text.slice(0, 240)}`);
@@ -245,8 +240,11 @@ async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDire
     const result = await paddleOcrResponse(response, "状态查询");
     const current = Number(result.extractProgress?.extractedPages || 0);
     const total = Number(result.extractProgress?.totalPages || 0);
-    if (result.state === "pending") onProgress("parsing", "PaddleOCR-VL-1.6 已提交，正在等待云端解析", current, total);
-    if (result.state === "running") onProgress("parsing", total ? `PaddleOCR-VL-1.6 正在解析 ${current}/${total} 页` : "PaddleOCR-VL-1.6 正在解析论文", current, total);
+    if (result.state === "pending" || result.state === "running") {
+      onProgress("parsing", result.state === "running"
+        ? (total ? `PaddleOCR-VL-1.6 正在解析 ${current}/${total} 页` : "PaddleOCR-VL-1.6 正在解析论文")
+        : "PaddleOCR-VL-1.6 已提交，正在等待云端解析", current, total);
+    }
     if (result.state === "failed") throw new Error(`PaddleOCR 解析失败：${result.errorMsg || "未知错误"}`);
     if (result.state !== "done") continue;
 
@@ -262,6 +260,7 @@ async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDire
       parser: "paddleocr",
       parser_model: parserModel,
       source_pdf: sourceUrl,
+      pdf_sha256: createHash("sha256").update(await fs.readFile(pdfPath)).digest("hex"),
       markdown: "source_structured.md",
       page_count: parsed.pageCount,
       assets: parsed.assets,
@@ -273,10 +272,83 @@ async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDire
   throw new Error(`PaddleOCR 解析超时（${Math.round(timeoutMs / 60000)} 分钟）`);
 }
 
+async function writePdfHashManifest(pdfPath: string, outputDirectory: string, manifest: Record<string, unknown>) {
+  const withHash = { ...manifest, pdf_sha256: createHash("sha256").update(await fs.readFile(pdfPath)).digest("hex") };
+  await fs.writeFile(path.join(outputDirectory, "document.json"), JSON.stringify(withHash, null, 2), "utf8");
+  return withHash;
+}
+
+async function runDoclingParser(pdfPath: string, outputDirectory: string, onProgress: ParserProgress) {
+  const pythonBin = process.env.TRANSLATION_PYTHON_BIN || path.join(process.cwd(), ".venv-atlas-parser", "bin", "python");
+  if (!existsSync(pythonBin)) throw new Error("本地 Docling 解析器未安装（缺少 .venv-atlas-parser）");
+  onProgress("parsing", "正在使用本地 Docling 解析论文");
+  const timeoutMs = Math.max(60000, Number(process.env.TRANSLATION_LOCAL_PARSE_TIMEOUT_MS || 10 * 60 * 1000));
+  const { stdout } = await execFileAsync(pythonBin, [
+    path.join(process.cwd(), "scripts", "parse-paper.py"),
+    "--pdf", pdfPath,
+    "--output", outputDirectory,
+  ], {
+    timeout: timeoutMs,
+    maxBuffer: 32 * 1024 * 1024,
+    env: {
+      ...process.env,
+      TRANSLATION_ENABLE_FORMULA: process.env.TRANSLATION_ENABLE_FORMULA || "1",
+      TRANSLATION_ENABLE_OCR: process.env.TRANSLATION_ENABLE_OCR || "0",
+    },
+  });
+  const lastLine = stdout.trim().split(/\r?\n/).at(-1) || "";
+  const manifest = JSON.parse(lastLine);
+  if (manifest?.parser !== "docling" || !manifest?.markdown) throw new Error("本地 Docling 解析器没有返回有效 manifest");
+  const markdown = await fs.readFile(path.join(outputDirectory, String(manifest.markdown)), "utf8");
+  const hashedManifest = await writePdfHashManifest(pdfPath, outputDirectory, manifest);
+  return { markdown, parser: "docling" as const, manifest: hashedManifest };
+}
+
+function pdftotextHeading(line: string) {
+  const text = line.trim();
+  if (!text || text.length > 100) return null;
+  if (/^\d+(?:\.\d+)*\.?\s+[A-Z]/.test(text)) return `## ${text}`;
+  if (/^(?:ABSTRACT|INTRODUCTION|(?:BACKGROUND|RELATED WORK)|METHODOLOGY?|METHODS?|RESULTS?|DISCUSSION|CONCLUSION|REFERENCES?|APPENDIX)\s*$/i.test(text)) return `## ${text}`;
+  return null;
+}
+
+async function runPdftotextParser(pdfPath: string, outputDirectory: string, onProgress: ParserProgress) {
+  onProgress("parsing", "Docling 不可用，正在尝试 pdftotext 本地文本提取");
+  const { stdout } = await execFileAsync("pdftotext", ["-layout", pdfPath, "-"], { timeout: 120000, maxBuffer: 64 * 1024 * 1024 });
+  const text = stdout.replace(/\f/g, "\n\n").trim();
+  if (!text || text.length < 200) throw new Error("PDF 未包含可提取文本，疑似扫描件");
+  const markdown = text.split(/\r?\n/).map((line) => pdftotextHeading(line) || line).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const manifest = { parser: "pdftotext", parser_version: "poppler", source_pdf: pdfPath, markdown: "source_structured.md", assets: [] };
+  await fs.writeFile(path.join(outputDirectory, "source_structured.md"), `${markdown}\n`, "utf8");
+  const hashedManifest = await writePdfHashManifest(pdfPath, outputDirectory, manifest);
+  return { markdown, parser: "pdftotext" as const, manifest: hashedManifest };
+}
+
+async function parseLocalPdf(pdfPath: string, outputDirectory: string, onProgress: ParserProgress) {
+  try {
+    return await runDoclingParser(pdfPath, outputDirectory, onProgress);
+  } catch (doclingError) {
+    console.warn(`  Docling 本地解析不可用：${networkErrorDetail(doclingError)}`);
+    return runPdftotextParser(pdfPath, outputDirectory, onProgress);
+  }
+}
+
 async function parseStructuredPdf(pdfPath: string, sourceUrl: string, outputDirectory: string, onProgress: ParserProgress) {
-  const parserMode = (process.env.TRANSLATION_PARSER || "paddleocr-only").toLowerCase();
-  if (!["auto", "paddleocr", "paddleocr-only"].includes(parserMode)) throw new Error(`本地 PDF 解析已禁用，不支持 TRANSLATION_PARSER=${parserMode}`);
-  if (!process.env.PADDLEOCR_ACCESS_TOKEN) throw new Error("PADDLEOCR_ACCESS_TOKEN 未配置，且本地 PDF 解析已禁用");
+  const parserMode = (process.env.TRANSLATION_PARSER || "auto").toLowerCase();
+  if (parserMode === "docling") return parseLocalPdf(pdfPath, outputDirectory, onProgress);
+  if (parserMode === "paddleocr" || parserMode === "paddleocr-only") {
+    if (!process.env.PADDLEOCR_ACCESS_TOKEN) throw new Error("PADDLEOCR_ACCESS_TOKEN 未配置，且当前 TRANSLATION_PARSER 只允许云端解析");
+    return parseWithPaddleOcr(pdfPath, sourceUrl, outputDirectory, onProgress);
+  }
+  if (parserMode !== "auto") throw new Error(`不支持 TRANSLATION_PARSER=${parserMode}（可用 auto/docling/paddleocr-only）`);
+  try {
+    const local = await parseLocalPdf(pdfPath, outputDirectory, onProgress);
+    if (inspectSourceQuality(local.markdown).ok) return local;
+    console.warn("  本地解析结果未通过质量门禁，回退到 PaddleOCR");
+  } catch (error) {
+    console.warn(`  本地解析失败，回退到 PaddleOCR：${networkErrorDetail(error)}`);
+  }
+  if (!process.env.PADDLEOCR_ACCESS_TOKEN) throw new Error("PADDLEOCR_ACCESS_TOKEN 未配置，且本地解析未通过质量门禁");
   return parseWithPaddleOcr(pdfPath, sourceUrl, outputDirectory, onProgress);
 }
 
@@ -295,7 +367,7 @@ async function parseAndValidateSource(pdfPath: string, sourceUrl: string, output
     if (report.ok) return { ...structured, markdown: repaired.markdown, manifest: { ...structured.manifest, source_repairs: repaired.repairs } };
     lastReport = report;
     onProgress("source_quality_check", `第 ${attempt} 次版面解析存在 ${report.issues.length} 个源文档质量问题`, 0, 0);
-    if (attempt === 1) onProgress("parsing", "正在重新请求 PaddleOCR 解析异常页面");
+    if (attempt === 1) onProgress("parsing", "正在重新请求云端解析异常页面");
   }
   const detail = lastReport?.issues.map((issue) => issue.message).slice(0, 6).join("；") || "未知质量问题";
   throw new Error(`SOURCE_QUALITY:源文档解析未通过质量门禁：${detail}`);
@@ -424,6 +496,26 @@ async function repairReusableSource(markdown: string, outputDirectory: string, m
   return { markdown: repaired.markdown, manifest: nextManifest };
 }
 
+async function tryReuseParsedSource(pdfPath: string, outputDirectory: string, sourceUrl: string, onProgress: ParserProgress) {
+  if (process.env.TRANSLATION_FORCE === "1") return null;
+  try {
+    const [manifestRaw, markdown] = await Promise.all([
+      fs.readFile(path.join(outputDirectory, "document.json"), "utf8"),
+      fs.readFile(path.join(outputDirectory, "source_structured.md"), "utf8"),
+    ]);
+    const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
+    if (!manifest?.parser || !markdown.trim()) return null;
+    const currentHash = createHash("sha256").update(await fs.readFile(pdfPath)).digest("hex");
+    if (manifest.pdf_sha256 && manifest.pdf_sha256 !== currentHash) return null;
+    const reusable = await repairReusableSource(markdown, outputDirectory, { ...manifest, pdf_sha256: currentHash });
+    if (!inspectSourceQuality(reusable.markdown).ok) return null;
+    onProgress("parsing", `正在复用已有的 ${String(manifest.parser)} 结构化解析结果`);
+    return { text: reusable.markdown, url: sourceUrl, pdfPath, parser: String(manifest.parser), manifest: reusable.manifest };
+  } catch {
+    return null;
+  }
+}
+
 async function extractPdf(urls: string[], outputDirectory: string, onProgress: ParserProgress) {
   let lastError = "没有找到可解析的 PDF";
   const cachedPdfPath = path.join(outputDirectory, "source.pdf");
@@ -431,21 +523,9 @@ async function extractPdf(urls: string[], outputDirectory: string, onProgress: P
     const cachedBytes = await fs.readFile(cachedPdfPath);
     if (cachedBytes.subarray(0, 4).toString() === "%PDF") {
       const sourceUrl = urls[0] || "本地已校验 PDF 缓存";
-      onProgress("downloading", "正在复用已校验的 PDF 缓存并上传至 PaddleOCR");
-      if (process.env.TRANSLATION_REUSE_PARSED === "1") {
-        try {
-          const manifest = JSON.parse(await fs.readFile(path.join(outputDirectory, "document.json"), "utf8"));
-          const markdown = await fs.readFile(path.join(outputDirectory, "source_structured.md"), "utf8");
-          if (manifest?.parser === "paddleocr" && markdown.trim()) {
-            const reusable = await repairReusableSource(markdown, outputDirectory, manifest);
-            if (!inspectSourceQuality(reusable.markdown).ok) throw new Error("缓存源文档仍未通过质量门禁");
-            onProgress("parsing", "正在复用已有的 PaddleOCR 云端解析结果");
-            return { text: reusable.markdown, url: sourceUrl, pdfPath: cachedPdfPath, parser: "paddleocr", manifest: reusable.manifest };
-          }
-        } catch {
-          // Incomplete cloud-parser cache should be uploaded and parsed again.
-        }
-      }
+      onProgress("downloading", "正在复用已校验的 PDF 缓存");
+      const reused = await tryReuseParsedSource(cachedPdfPath, outputDirectory, sourceUrl, onProgress);
+      if (reused) return reused;
       const structured = await parseAndValidateSource(cachedPdfPath, sourceUrl, outputDirectory, onProgress);
       return { text: structured.markdown, url: sourceUrl, pdfPath: cachedPdfPath, parser: structured.parser, manifest: structured.manifest };
     }
@@ -456,9 +536,17 @@ async function extractPdf(urls: string[], outputDirectory: string, onProgress: P
   for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
     const url = candidates[candidateIndex];
     try {
-      onProgress("downloading", "正在下载开放 PDF");
-      const response = await fetch(url, { headers: { Accept: "application/pdf", "User-Agent": "AI-Research-Atlas/0.1" }, signal: AbortSignal.timeout(60000) });
-      if (!response.ok) { lastError = `PDF 请求失败：${response.status}`; continue; }
+      onProgress("downloading", `正在下载 PDF（来源 ${candidateIndex + 1}/${candidates.length}）`);
+      const response = await fetchWithRetry(url, {
+        headers: { Accept: "application/pdf", "User-Agent": "AI-Research-Atlas/0.1" },
+      }, {
+        attempts: 4,
+        timeoutMs: 60000,
+        onRetry: ({ attempt, error, status, delayMs }) => {
+          console.warn(`  PDF 下载第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
+        },
+      });
+      if (!response.ok) { lastError = `PDF 请求失败：HTTP ${response.status}`; continue; }
       const bytes = Buffer.from(await response.arrayBuffer());
       if (!bytes.subarray(0, 4).toString().startsWith("%PDF")) {
         const discovered = pdfLinksFromLandingHtml(bytes.toString("utf8"), response.url || url);
@@ -470,101 +558,89 @@ async function extractPdf(urls: string[], outputDirectory: string, onProgress: P
       }
       const pdfPath = path.join(outputDirectory, "source.pdf");
       await fs.writeFile(pdfPath, bytes);
-      if (process.env.TRANSLATION_REUSE_PARSED === "1") {
-        try {
-          const manifest = JSON.parse(await fs.readFile(path.join(outputDirectory, "document.json"), "utf8"));
-          const markdown = await fs.readFile(path.join(outputDirectory, "source_structured.md"), "utf8");
-          if (manifest?.parser && markdown.trim()) {
-            const reusable = await repairReusableSource(markdown, outputDirectory, manifest);
-            if (!inspectSourceQuality(reusable.markdown).ok) throw new Error("缓存源文档仍未通过质量门禁");
-            onProgress("parsing", `正在复用已有的 ${manifest.parser} 结构化解析结果`);
-            return { text: reusable.markdown, url, pdfPath, parser: String(manifest.parser), manifest: reusable.manifest };
-          }
-        } catch {
-          // A missing or incomplete previous parse should continue through the normal parser chain.
-        }
-      }
+      const reused = await tryReuseParsedSource(pdfPath, outputDirectory, url, onProgress);
+      if (reused) return reused;
       onProgress("parsing", "正在解析版面、公式、图片和表格；长论文可能需要几分钟");
       const structured = await parseAndValidateSource(pdfPath, url, outputDirectory, onProgress);
       return { text: structured.markdown, url, pdfPath, parser: structured.parser, manifest: structured.manifest };
-    } catch (error) { lastError = networkErrorDetail(error); }
+    } catch (error) {
+      lastError = `来源 ${url} 失败：${networkErrorDetail(error)}`;
+    }
   }
-  throw new Error(lastError);
+  throw new Error(`PDF 获取失败：已对 ${candidates.length} 个来源自动重试仍无法下载（${lastError}）`);
 }
 
 function tokenOccurrenceCount(content: string, token: string) {
   return content.split(token).length - 1;
 }
 
-async function translateChunk(chunk: string, index: number | string, total: number, glossary: string, requiredTokens: string[] = []) {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const response = await fetch(`${apiBaseUrl}/chat/completions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, thinking: { type: "disabled" }, temperature: 0.1, max_tokens: 7000, stream: false, messages: [
-          { role: "system", content: "你是严谨的中文学术论文翻译助手。" },
-          { role: "user", content: translationPrompt(chunk, index, total, glossary) },
-        ] }),
-        signal: AbortSignal.timeout(120000),
-      });
-      if (!response.ok) throw new Error(`DeepSeek ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-      if (typeof content !== "string" || !content.trim()) throw new Error("DeepSeek 返回空译文");
-      const invalidTokens = requiredTokens.filter((token) => tokenOccurrenceCount(content, token) !== 1);
-      if (invalidTokens.length) throw new Error(`第 ${index}/${total} 分块中，DeepSeek 改写或遗漏了 ${invalidTokens.length} 个公式/图片/表格占位符`);
-      // Source formulas are protected as placeholders. Allow the model to wrap
-      // bare variables such as b or T in inline math, but reject newly invented
-      // display/complex formulas early so the chunk can be retried safely.
-      if (/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]/.test(content)) throw new Error(`第 ${index}/${total} 分块中，DeepSeek 新增了原文不存在的块级公式`);
-      return content.trim();
-    } catch (error) {
-      lastError = error;
-      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1500 * (attempt + 1)));
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+async function translateChunk(chunk: string, index: number | string, total: number, glossary: string, requiredTokens: string[] = [], signal?: AbortSignal) {
+  const response = await fetchWithRetry(`${apiBaseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, thinking: { type: "disabled" }, temperature: 0.1, max_tokens: 7000, stream: false, messages: [
+      { role: "system", content: "你是严谨的中文学术论文翻译助手。" },
+      { role: "user", content: translationPrompt(chunk, index, total, glossary) },
+    ] }),
+    signal,
+  }, {
+    attempts: 3,
+    timeoutMs: 120000,
+    retryPost: true,
+    retryStatusOnPost: true,
+    onRetry: ({ attempt, error, status, delayMs }) => {
+      console.warn(`  DeepSeek 第 ${index}/${total} 分块第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
+    },
+  });
+  if (!response.ok) throw new Error(`DeepSeek ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  const data = await response.json().catch(() => { throw new Error("DeepSeek 返回了无法解析的 JSON"); });
+  const content = data.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || !content.trim()) throw new Error("DeepSeek 返回空译文");
+  const invalidTokens = requiredTokens.filter((token) => tokenOccurrenceCount(content, token) !== 1);
+  if (invalidTokens.length) throw new Error(`第 ${index}/${total} 分块中，DeepSeek 改写或遗漏了 ${invalidTokens.length} 个公式/图片/表格占位符`);
+  // Source formulas are protected as placeholders. Allow the model to wrap
+  // bare variables such as b or T in inline math, but reject newly invented
+  // display/complex formulas early so the chunk can be retried safely.
+  if (/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]/.test(content)) throw new Error(`第 ${index}/${total} 分块中，DeepSeek 新增了原文不存在的块级公式`);
+  return content.trim();
 }
 
 async function translatePaperTitle(title: string) {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const response = await fetch(`${apiBaseUrl}/chat/completions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, thinking: { type: "disabled" }, temperature: 0.1, max_tokens: 160, stream: false, messages: [
-          { role: "system", content: "你是中文科研论文标题翻译助手。只输出一个准确、简洁的中文标题，不要输出原文、引号、解释、作者或链接。模型名、数据集名和缩写保留。" },
-          { role: "user", content: `请将下面的英文论文标题翻译成简体中文：\n${title}` },
-        ] }),
-        signal: AbortSignal.timeout(60000),
-      });
-      if (!response.ok) throw new Error(`DeepSeek 标题翻译 ${response.status}: ${(await response.text()).slice(0, 300)}`);
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-      const translated = typeof content === "string"
-        ? content.replace(/^\s*```[^\n]*\n?|\n?```\s*$/g, "").replace(/^标题\s*[:：]\s*/i, "").trim().split(/\r?\n/)[0]
-        : "";
-      if (!translated || !/[\u4e00-\u9fff]/.test(translated)) throw new Error("标题翻译没有返回中文标题");
-      return translated;
-    } catch (error) {
-      lastError = error;
-      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1200 * (attempt + 1)));
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  const response = await fetchWithRetry(`${apiBaseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, thinking: { type: "disabled" }, temperature: 0.1, max_tokens: 160, stream: false, messages: [
+      { role: "system", content: "你是中文科研论文标题翻译助手。只输出一个准确、简洁的中文标题，不要输出原文、引号、解释、作者或链接。模型名、数据集名和缩写保留。" },
+      { role: "user", content: `请将下面的英文论文标题翻译成简体中文：\n${title}` },
+    ] }),
+  }, {
+    attempts: 3,
+    timeoutMs: 60000,
+    retryPost: true,
+    retryStatusOnPost: true,
+    onRetry: ({ attempt, error, status, delayMs }) => {
+      console.warn(`  DeepSeek 标题翻译第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
+    },
+  });
+  if (!response.ok) throw new Error(`DeepSeek 标题翻译 ${response.status}: ${(await response.text()).slice(0, 300)}`);
+  const data = await response.json().catch(() => { throw new Error("DeepSeek 标题翻译返回了无法解析的 JSON"); });
+  const content = data.choices?.[0]?.message?.content;
+  const translated = typeof content === "string"
+    ? content.replace(/^\s*```[^\n]*\n?|\n?```\s*$/g, "").replace(/^标题\s*[:：]\s*/i, "").trim().split(/\r?\n/)[0]
+    : "";
+  if (!translated || !/[\u4e00-\u9fff]/.test(translated)) throw new Error("标题翻译没有返回中文标题");
+  return translated;
 }
 
-async function translateStructuredChunk(chunk: string, index: number | string, total: number, glossary: string, depth = 0): Promise<string> {
+async function translateStructuredChunk(chunk: string, index: number | string, total: number, glossary: string, depth = 0, signal?: AbortSignal): Promise<string> {
   const protectedChunk = protectStructuredMarkdown(chunk);
   const tokenOnly = protectedChunk.text.trim().split(/\s+/).every((part) => /^\[\[ATLAS_(?:MATH|ASSET|TABLE|CAPTION|BIND)_\d{6}\]\]$/.test(part));
   if (protectedChunk.protectedTokens.length && tokenOnly) return chunk;
   try {
-    const translated = await translateChunk(protectedChunk.text, index, total, glossary, protectedChunk.protectedTokens.map((item) => item.token));
+    const translated = await translateChunk(protectedChunk.text, index, total, glossary, protectedChunk.protectedTokens.map((item) => item.token), signal);
     return restoreStructuredMarkdown(normalizeTranslatedMarkdown(translated), protectedChunk.protectedTokens);
   } catch (error) {
+    if (signal?.aborted) throw error;
     const tokenFailure = error instanceof Error && /占位符|新增了原文不存在的(?:块级)?公式/.test(error.message);
     if (!tokenFailure || depth >= 3 || chunk.length < 1800) throw error;
     const targetChars = Math.max(1200, Math.min(3500, Math.floor(chunk.length / 2)));
@@ -572,7 +648,7 @@ async function translateStructuredChunk(chunk: string, index: number | string, t
     if (parts.length <= 1) throw error;
     const translatedParts: string[] = [];
     for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
-      translatedParts.push(await translateStructuredChunk(parts[partIndex], `${index}.${partIndex + 1}`, total, glossary, depth + 1));
+      translatedParts.push(await translateStructuredChunk(parts[partIndex], `${index}.${partIndex + 1}`, total, glossary, depth + 1, signal));
     }
     return translatedParts.join("\n\n");
   }
@@ -624,14 +700,21 @@ async function reviewStructuredBindings(manifest: ReturnType<typeof buildStructu
     // PaddleOCR-VL supplies visual classification; DeepSeek resolves caption IDs
     // from compact structural metadata only.
     const messageContent = `请审校下面 ${candidates.length} 个视觉对象，并为每个对象选择正确的对象类型和题注 ID。visual_kind 是 PaddleOCR-VL 对裁剪图的版面识别结果，应优先采用；原生 HTML 表格标记为 table；表格截图标记为 table_image；普通图片标记为 figure。返回格式：[${JSON.stringify({ id: "figure-001", semantic_kind: "figure|table|table_image|unknown", caption_id: "caption-001", confidence: 0.9, reason: "不超过20字" })}]。caption_id 必须来自 captions 列表；无法确定时用 null。不要输出 Markdown 或解释。\n${metadata}`;
-    const response = await fetch(`${apiBaseUrl}/chat/completions`, {
+    const response = await fetchWithRetry(`${apiBaseUrl}/chat/completions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model: process.env.DEEPSEEK_SEMANTIC_MODEL || model, thinking: { type: "disabled" }, temperature: 0, max_tokens: 2200, stream: false, messages: [
         { role: "system", content: "你是论文版面结构审校器。结合 OCR/Markdown 元数据和 PaddleOCR-VL 的 visual_kind 判断对象是 figure、table、table_image 或 unknown。只输出 JSON 数组。" },
         { role: "user", content: messageContent },
       ] }),
-      signal: AbortSignal.timeout(30000),
+    }, {
+      attempts: 2,
+      timeoutMs: 30000,
+      retryPost: true,
+      retryStatusOnPost: true,
+      onRetry: ({ attempt, error, status, delayMs }) => {
+        console.warn(`  DeepSeek 语义审校第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
+      },
     });
     if (!response.ok) throw new Error(`DeepSeek 语义审校 ${response.status}`);
     const data = await response.json();
@@ -672,6 +755,7 @@ async function main() {
   model = process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
   apiBaseUrl = process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com";
   concurrency = Math.max(1, Math.min(4, Number(process.env.TRANSLATION_CONCURRENCY || 2)));
+  const leaseMinutes = Math.max(10, Number(process.env.TRANSLATION_LEASE_MINUTES || 15));
   const paperId = Number(process.argv[process.argv.indexOf("--paper-id") + 1]);
   if (!Number.isInteger(paperId) || paperId <= 0) throw new Error("用法：tsx scripts/translate-paper.ts --paper-id <id>");
   const db = new Database(dbPath);
@@ -679,15 +763,17 @@ async function main() {
   const paper = db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE id = ?").get(paperId) as any;
   if (!paper) throw new Error("论文不存在");
   if (!process.env.DEEPSEEK_API_KEY) throw new Error("DEEPSEEK_API_KEY 未配置");
+  db.prepare("UPDATE paper_translations SET status = 'running', job_pid = ?, lease_expires_at = datetime('now', ?), started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
+    .run(process.pid, `+${leaseMinutes} minutes`, paperId);
   const updateProgress = (phase: string, message: string, current = 0, total = 0) => {
-    db.prepare("UPDATE paper_translations SET status = 'running', progress_phase = ?, progress_message = ?, progress_current = ?, progress_total = ?, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
-      .run(phase, message, current, total, paperId);
+    db.prepare("UPDATE paper_translations SET status = 'running', progress_phase = ?, progress_message = ?, progress_current = ?, progress_total = ?, lease_expires_at = datetime('now', ?), updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
+      .run(phase, message, current, total, `+${leaseMinutes} minutes`, paperId);
   };
   const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
   const glossary = existsSync(terminologyPath) ? await fs.readFile(terminologyPath, "utf8") : "# 术语表\n\n以论文原文为准。\n";
   const sourceHash = translationSourceHash(paper, {
     model,
-    parser: process.env.TRANSLATION_PARSER || "paddleocr-only",
+    parser: process.env.TRANSLATION_PARSER || "auto",
     formulaEnabled: process.env.TRANSLATION_ENABLE_FORMULA || "1",
     glossary,
   });
@@ -747,8 +833,11 @@ async function main() {
     completedChunks += 1;
     updateProgress("translating", `正在翻译 ${completedChunks}/${chunks.length} 个章节分块`, completedChunks, chunks.length);
   };
+  const failureController = new AbortController();
+  let failure: unknown = null;
   const worker = async () => {
     while (true) {
+      if (failureController.signal.aborted) return;
       const index = cursor++;
       if (index >= chunks.length) return;
       const chunkHash = createHash("sha256").update(`${sourceHash}\n${index}\n${chunks[index]}`).digest("hex").slice(0, 20);
@@ -765,7 +854,14 @@ async function main() {
         }
         console.warn(`invalid cache ${index + 1}/${chunks.length}: ${cacheIssues.join("；")}`);
       }
-      results[index] = await translateStructuredChunk(chunks[index], index + 1, chunks.length, glossary);
+      try {
+        results[index] = await translateStructuredChunk(chunks[index], index + 1, chunks.length, glossary, 0, failureController.signal);
+      } catch (error) {
+        if (failureController.signal.aborted) return;
+        failure = error;
+        failureController.abort();
+        throw error;
+      }
       const temporaryChunkPath = `${chunkPath}.tmp-${process.pid}`;
       await fs.writeFile(temporaryChunkPath, results[index], "utf8");
       await fs.rename(temporaryChunkPath, chunkPath);
@@ -774,6 +870,7 @@ async function main() {
     }
   };
   const workerResults = await Promise.allSettled(Array.from({ length: Math.min(concurrency, chunks.length) }, () => worker()));
+  if (failure) throw failure;
   const workerFailure = workerResults.find((result): result is PromiseRejectedResult => result.status === "rejected");
   if (workerFailure) throw workerFailure.reason;
   updateProgress("validating", "翻译完成，正在校验章节、公式、图片和表格", chunks.length, chunks.length);
@@ -803,7 +900,7 @@ async function main() {
   await fs.rename(temporaryReportPath, reportPath);
   const status = validationIssues.length ? "needs_review" : "completed";
   const validationError = validationIssues.length ? validationIssues.join("；") : null;
-  db.prepare("UPDATE paper_translations SET status = ?, translated_chars = ?, error = ?, progress_phase = ?, progress_message = ?, progress_current = ?, progress_total = ?, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
+  db.prepare("UPDATE paper_translations SET status = ?, translated_chars = ?, error = ?, progress_phase = ?, progress_message = ?, progress_current = ?, progress_total = ?, lease_expires_at = NULL, job_pid = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
     .run(status, finalMarkdown.length, validationError, status, status === "completed" ? "翻译和结构校验已完成" : "翻译已生成，但结构校验需要人工复核", chunks.length, chunks.length, paperId);
   db.close();
 }
@@ -817,7 +914,7 @@ main().catch(async (error) => {
     const needsReview = /^(?:SOURCE_QUALITY|STRUCTURE_QUALITY):/.test(message);
     const structureIssue = /^STRUCTURE_QUALITY:/.test(message);
     const cleanMessage = message.replace(/^(?:SOURCE_QUALITY|STRUCTURE_QUALITY):\s*/, "");
-    db.prepare("UPDATE paper_translations SET status = ?, error = ?, progress_phase = ?, progress_message = ?, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
+    db.prepare("UPDATE paper_translations SET status = ?, error = ?, progress_phase = ?, progress_message = ?, lease_expires_at = NULL, job_pid = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
       .run(needsReview ? "needs_review" : "failed", cleanMessage, needsReview ? (structureIssue ? "binding_review" : "source_quality_check") : "failed", cleanMessage, paperId);
     db.close();
   }

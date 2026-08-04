@@ -22,6 +22,7 @@ import {
   stripStructuredBindingMarkers,
   translationPrompt,
   translationSourceHash,
+  translationUrlCandidates,
   validateTranslatedMarkdown,
   validateTranslatedFragment,
   validateStructuredBindings,
@@ -324,6 +325,21 @@ test("translation cache hash changes with model, parser settings, and glossary",
   assert.notEqual(baseline, translationSourceHash(paper, { model: "model-b", parser: "docling", formulaEnabled: "1", glossary: "A" }));
   assert.notEqual(baseline, translationSourceHash(paper, { model: "model-a", parser: "legacy", formulaEnabled: "1", glossary: "A" }));
   assert.notEqual(baseline, translationSourceHash(paper, { model: "model-a", parser: "docling", formulaEnabled: "1", glossary: "B" }));
+});
+
+test("translationUrlCandidates adds a DOI landing source and prefers direct PDFs", () => {
+  const candidates = translationUrlCandidates(
+    { pdf_url: null, arxiv_id: null, doi: "10.1000/xyz" },
+    [],
+  );
+  assert.ok(candidates.includes("https://doi.org/10.1000/xyz"));
+  const mixed = translationUrlCandidates(
+    { pdf_url: "https://example.com/paper.pdf", arxiv_id: "2401.00001", doi: "10.1000/xyz" },
+    [],
+  );
+  assert.equal(mixed[0], "https://example.com/paper.pdf");
+  assert.ok(mixed.includes("https://arxiv.org/pdf/2401.00001.pdf"));
+  assert.equal(new Set(mixed).size, mixed.length);
 });
 
 test("strict validation accepts a structurally equivalent translation", () => {

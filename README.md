@@ -154,11 +154,11 @@ npm run summarize:papers
 
 分类接口使用结构化 JSON，要求模型返回主方向、辅助方向、置信度、中文理由、证据术语和可选的新方向建议。它不会根据模型自由发挥的会议、引用量或实验结果做分类。
 
-项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF，并调用 PaddleOCR-VL-1.6 云端 API 生成结构化 Markdown；本地 Docling 和 `pdftotext` 回退已禁用，云端解析失败时任务会显示具体错误。解析过程会按页显示进度，标题层级、阅读顺序、公式、图片和表格交给 DeepSeek 按章节片段翻译。图片资源会保存到 `data/translations/<paper-id>/assets/` 并直接在中文阅读页渲染；成功片段会缓存在 `chunks/` 中以支持断点续译。译文、原文、解析清单和报告分别保存为 `translation_zh.md`、`source.md`、`document.json` 和 `translation_report.md`。章节、公式、图片或表格校验失败时，任务会标记为“需人工复核”，不会报告为已完成。翻译仍需要配置 DeepSeek，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
+项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF（瞬时网络错误会自动重试并退避），优先用本地 Docling 解析（未安装时回退 `pdftotext`），只有本地解析不可用或质量不达标时才调用 PaddleOCR-VL-1.6 云端 API。解析过程会按页显示进度，标题层级、阅读顺序、公式、图片和表格交给 DeepSeek 按章节片段翻译。图片资源会保存到 `data/translations/<paper-id>/assets/` 并直接在中文阅读页渲染；已验证的 PDF 和解析结果默认复用（以 PDF SHA-256 校验），成功片段会缓存在 `chunks/` 中以支持断点续译。译文、原文、解析清单和报告分别保存为 `translation_zh.md`、`source.md`、`document.json` 和 `translation_report.md`。章节、公式、图片或表格校验失败时，任务会标记为“需人工复核”，不会报告为已完成。任务带 lease/heartbeat：进程异常退出后，过期任务可以在下次请求时自动重新入队，而不是永久停留在“处理中”。翻译仍需要配置 DeepSeek，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
 
 ### 配置云端 PDF 解析器
 
-在 `.env.local` 中配置 `PADDLEOCR_ACCESS_TOKEN`。全文翻译固定使用 PaddleOCR-VL-1.6 云端解析，不会运行本地 Docling 或 `pdftotext`；云端服务不可用时任务会失败并保留具体网络错误，方便重试。图表语义审校优先使用 Qwen3-VL-Flash：配置 `QWEN_VL_API_KEY`（或 `DASHSCOPE_API_KEY`）、`QWEN_VL_API_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1` 和 `QWEN_VL_MODEL=qwen3-vl-flash` 后，Qwen 只接收 PaddleOCR 导出的裁剪图，DeepSeek 仍负责标题、正文和题注翻译；未配置 Qwen Key 时自动回退到 PaddleOCR-VL 的版面识别。
+在 `.env.local` 中配置 `PADDLEOCR_ACCESS_TOKEN` 作为云端兜底。默认 `TRANSLATION_PARSER=auto`：优先使用本地 Docling 解析（`npm run setup:translation-parser` 安装，未安装时回退 `pdftotext`），本地解析失败或质量不达标时才上传 PaddleOCR-VL-1.6；如需强制云端解析可改为 `paddleocr-only`。所有网络调用（PDF 下载、OCR 提交/轮询、DeepSeek）统一只对瞬时错误重试，指数退避并遵守 `Retry-After`，400/401 等永久错误不会浪费请求。图表语义审校优先使用 Qwen3-VL-Flash：配置 `QWEN_VL_API_KEY`（或 `DASHSCOPE_API_KEY`）、`QWEN_VL_API_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1` 和 `QWEN_VL_MODEL=qwen3-vl-flash` 后，Qwen 只接收 PaddleOCR 导出的裁剪图，DeepSeek 仍负责标题、正文和题注翻译；未配置 Qwen Key 时自动回退到 PaddleOCR-VL 的版面识别。
 
 网页中的“同步最新论文”按钮和每日任务也调用同一个多源同步器：
 

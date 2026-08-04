@@ -156,8 +156,11 @@ function looksLikePdfUrl(value: string) {
   return /arxiv\.org\/pdf|\.pdf(?:[?#]|$)|download/i.test(value);
 }
 
-export function translationUrlCandidates(paper: { pdf_url?: string | null; arxiv_id?: string | null }, alternatives: Array<{ pdf_url?: string | null; arxiv_id?: string | null }> = []) {
-  const urls = [paper.pdf_url || "", ...alternatives.flatMap((item) => [item.pdf_url || ""]), paper.arxiv_id ? `https://arxiv.org/pdf/${paper.arxiv_id.replace(/\.pdf$/, "")}.pdf` : "", ...alternatives.map((item) => item.arxiv_id ? `https://arxiv.org/pdf/${item.arxiv_id.replace(/\.pdf$/, "")}.pdf` : "")].filter(Boolean);
+export function translationUrlCandidates(paper: { pdf_url?: string | null; arxiv_id?: string | null; doi?: string | null }, alternatives: Array<{ pdf_url?: string | null; arxiv_id?: string | null }> = []) {
+  const doiUrl = paper.doi && !/^https?:\/\//i.test(paper.doi)
+    ? `https://doi.org/${paper.doi.replace(/^doi:\s*/i, "")}`
+    : paper.doi || "";
+  const urls = [paper.pdf_url || "", doiUrl, ...alternatives.flatMap((item) => [item.pdf_url || ""]), paper.arxiv_id ? `https://arxiv.org/pdf/${paper.arxiv_id.replace(/\.pdf$/, "")}.pdf` : "", ...alternatives.map((item) => item.arxiv_id ? `https://arxiv.org/pdf/${item.arxiv_id.replace(/\.pdf$/, "")}.pdf` : "")].filter(Boolean);
   return [...new Set(urls)].sort((left, right) => Number(looksLikePdfUrl(right)) - Number(looksLikePdfUrl(left)));
 }
 

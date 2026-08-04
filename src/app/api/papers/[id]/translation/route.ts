@@ -14,7 +14,7 @@ function translationRuntime() {
   const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
   return {
     model: process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-    parser: process.env.TRANSLATION_PARSER || "paddleocr-only",
+    parser: process.env.TRANSLATION_PARSER || "auto",
     formulaEnabled: process.env.TRANSLATION_ENABLE_FORMULA || "1",
     glossary: existsSync(terminologyPath) ? readFileSync(terminologyPath, "utf8") : "# 术语表\n\n以论文原文为准。\n",
   };
@@ -109,22 +109,39 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const candidates = translationUrlCandidates(paper, alternatives);
     if (!candidates.length) return NextResponse.json({ error: "这篇论文没有可访问的 PDF，暂时无法生成全文翻译。" }, { status: 400 });
     const sourceHash = translationSourceHash(paper, translationRuntime());
-    const existing = db.prepare("SELECT status, source_hash, error, progress_message FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
+    const existing = db.prepare("SELECT status, source_hash, error, progress_message, lease_expires_at FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
     if (existing?.status === "completed" && existing.source_hash === sourceHash && !payload.force) {
       return NextResponse.json({ success: true, cached: true, status: existing.status, message: "已存在同版本中文翻译。" });
     }
     const cacheInvalidated = existing?.status === "pending" && String(existing?.progress_message || "").startsWith("旧缓存已失效");
-    if (["pending", "running"].includes(existing?.status) && !cacheInvalidated) {
+    const leaseExpired = !existing?.lease_expires_at || existing.lease_expires_at < (db.prepare("SELECT datetime('now') AS now").get() as { now: string }).now;
+    if (["pending", "running"].includes(existing?.status) && !cacheInvalidated && !leaseExpired) {
       return NextResponse.json({ success: true, cached: false, status: existing.status, message: "翻译任务已在执行。" });
     }
-    const claimed = db.prepare("INSERT INTO paper_translations (paper_id, status, source_hash, output_dir, error, progress_phase, progress_current, progress_total, progress_message, started_at, updated_at) VALUES (?, 'pending', ?, ?, NULL, 'queued', 0, 0, '任务已进入队列，等待翻译进程启动', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) ON CONFLICT(paper_id) DO UPDATE SET status = 'pending', source_hash = excluded.source_hash, output_dir = excluded.output_dir, error = NULL, progress_phase = 'queued', progress_current = 0, progress_total = 0, progress_message = '任务已进入队列，等待翻译进程启动', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE paper_translations.status NOT IN ('pending', 'running') OR (paper_translations.status = 'pending' AND paper_translations.progress_message LIKE '旧缓存已失效%')")
-      .run(paper.id, sourceHash, translationDirectory(paper.id));
+    const claimed = db.prepare("UPDATE paper_translations SET status = 'pending', source_hash = ?, output_dir = ?, error = NULL, attempts = attempts + 1, progress_phase = 'queued', progress_current = 0, progress_total = 0, progress_message = '任务已进入队列，等待翻译进程启动', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, lease_expires_at = datetime('now', '+5 minutes'), job_pid = NULL WHERE paper_id = ? AND (status NOT IN ('pending', 'running') OR lease_expires_at IS NULL OR lease_expires_at < datetime('now') OR progress_message LIKE '旧缓存已失效%')")
+      .run(sourceHash, translationDirectory(paper.id), paper.id);
     if (claimed.changes === 0) return NextResponse.json({ success: true, cached: false, status: existing?.status || "pending", message: "翻译任务已在执行。" });
     mkdirSync(path.join(process.cwd(), "data"), { recursive: true });
     const logDescriptor = openSync(path.join(process.cwd(), "data", `translation-${paper.id}.log`), "a");
     const command = process.platform === "win32" ? "npx.cmd" : "npx";
     const child = spawn(command, ["tsx", path.join(process.cwd(), "scripts", "translate-paper.ts"), "--paper-id", String(paper.id)], { cwd: process.cwd(), detached: true, stdio: ["ignore", logDescriptor, logDescriptor], env: { ...process.env, TRANSLATION_FORCE: payload.force ? "1" : "0" } });
     closeSync(logDescriptor);
+    const markFailed = (message: string) => {
+      try {
+        const recoveryDb = new Database(DB_PATH);
+        ensureResearchFeatureSchema(recoveryDb);
+        const row = recoveryDb.prepare("SELECT status FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
+        if (row && ["pending", "running"].includes(row.status)) {
+          recoveryDb.prepare("UPDATE paper_translations SET status = 'failed', error = ?, progress_phase = 'failed', progress_message = ?, lease_expires_at = NULL, job_pid = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
+            .run(message, message, paper.id);
+        }
+        recoveryDb.close();
+      } catch {
+        // The original task row is the source of truth; a late write failure is not worth crashing the API.
+      }
+    };
+    child.on("error", (error) => markFailed(`翻译进程启动失败：${error.message}`));
+    child.on("exit", (code) => { if (code !== 0) markFailed(`翻译进程异常退出（退出码 ${code}）`); });
     child.unref();
     return NextResponse.json({ success: true, cached: false, status: "pending", message: "翻译任务已在后台启动，可稍后刷新状态。" });
   } finally { db.close(); }
