@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
 import { failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationProgress } from "../src/lib/translation-job";
 
@@ -686,7 +686,7 @@ async function translateStructuredChunk(chunk: string, index: number | string, t
   if (protectedChunk.protectedTokens.length && tokenOnly) return chunk;
   try {
     const translated = await translateChunk(protectedChunk.text, index, total, glossary, protectedChunk.protectedTokens.map((item) => item.token), signal);
-    const restored = restoreStructuredMarkdown(normalizeTranslatedMarkdown(translated), protectedChunk.protectedTokens);
+    const restored = unwrapReferenceMathBlocks(restoreStructuredMarkdown(normalizeTranslatedMarkdown(translated), protectedChunk.protectedTokens));
     if (/\[\[ATLAS_[A-Z]+_\d{6}\]\]/.test(restored)) {
       throw new Error(`第 ${index}/${total} 分块中仍有未恢复的结构化占位符`);
     }

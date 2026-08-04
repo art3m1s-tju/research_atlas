@@ -1159,8 +1159,9 @@ export function validateTranslatedMarkdown(source: string, translated: string, e
   const mathComparison = mathContentEquivalent(source, translated);
   if (mathComparison.missing.length || mathComparison.extras.length) issues.push(`公式内容或数量不一致：原文 ${sourceMath.length}，译文 ${translatedMath.length}`);
   if (JSON.stringify(sourceBlockMath) !== JSON.stringify(translatedBlockMath)) issues.push(`块级公式内容或顺序不一致：原文 ${sourceBlockMath.length}，译文 ${translatedBlockMath.length}`);
-  if (/\$\$\s*<[^>]*img\b/i.test(translated)) issues.push("图片被错误包裹在公式块中");
-  if (/\$\$\s*<table\b/i.test(translated)) issues.push("表格被错误包裹在公式块中");
+  const mathBlocks = translated.match(/\$\$[\s\S]*?\$\$/g) || [];
+  if (mathBlocks.some((block) => /<[^>]*img\b/i.test(block))) issues.push("图片被错误包裹在公式块中");
+  if (mathBlocks.some((block) => /<table\b/i.test(block))) issues.push("表格被错误包裹在公式块中");
   if ((translated.match(/```/g) || []).length % 2 !== 0) issues.push("代码围栏不成对");
   if ((translated.match(/^\s*\$\$\s*$/gm) || []).length % 2 !== 0) issues.push("块级公式围栏不成对");
   if (/上接前文|下接后文|翻译如下|以下是翻译/.test(translated)) issues.push("检测到模型添加的分块衔接语");
@@ -1449,6 +1450,7 @@ export function translationPrompt(chunk: string, index: number | string, total: 
 10. 严格遵守下方术语表；作者名、模型名、数据集名、指标名和引用键不要翻译。
 11. 不要输出“翻译如下”、“上接前文”、“下接后文”、总结、解释、分隔线或本片段之外的内容。
 12. 严禁新增、复制、猜测或重新编号任何 [[ATLAS_...]] 占位符：输出中只能出现输入片段里逐字符存在过的占位符，且每个只能出现一次；对应图片/表格/公式缺失时保留原占位符，不要编造新占位符或新内容。
+13. 不要把参考文献、URL、引用条目、页码或普通句子包进 $...$ / $$...$$：公式围栏内只能放数学公式。
 
 术语表：
 ${glossary || "以论文原文为准；作者名、模型名、数据集名和指标名保持不变。"}
@@ -1461,4 +1463,17 @@ ${chunk}`;
 export function findUnknownProtectedTokens(content: string, knownTokens: string[] = []) {
   const known = new Set(knownTokens);
   return [...new Set([...content.matchAll(/\[\[ATLAS_[A-Z]+_\d{6}\]\]/g)].map((match) => match[0]))].filter((token) => !known.has(token));
+}
+
+/**
+ * Models occasionally wrap a bibliography entry or URL in display math
+ * ($$...$$). That is never a legitimate formula; unwrap it deterministically
+ * so the document can be validated and published.
+ */
+export function unwrapReferenceMathBlocks(markdown: string) {
+  return markdown.replace(/\$\$([\s\S]*?)\$\$/g, (block, body: string) =>
+    /https?:|doi\.org|arXiv|vol\.\s*\d|pp\.\s*\d|et al\.|\[\d+\]\s+[A-Z"“]|Journal|Proceedings|Conference|Magazine/i.test(body)
+      ? body.trim()
+      : block,
+  );
 }

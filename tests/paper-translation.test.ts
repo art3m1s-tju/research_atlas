@@ -25,6 +25,7 @@ import {
   translationPrompt,
   translationSourceHash,
   translationUrlCandidates,
+  unwrapReferenceMathBlocks,
   validateTranslatedMarkdown,
   validateTranslatedFragment,
   validateStructuredBindings,
@@ -371,6 +372,28 @@ test("unknown protected placeholders are detected in model output", () => {
     "[[ATLAS_TABLE_000006]]",
   ]);
   assert.deepEqual(findUnknownProtectedTokens("普通文本", known), []);
+});
+
+test("reference-like display math is unwrapped while real formulas stay", () => {
+  const input = [
+    "正文",
+    "",
+    "$$[293] S. Hosseini and M. Mesbahi, \"Energy-aware aerial surveillance,\" J. Guid., Control, Dyn., vol. 39, no. 9, pp. 1980–1993, 2016. [Online]. Available: http://dx.doi.org/10.2514/1.G001737$$",
+    "",
+    "$$x=1$$",
+  ].join("\n");
+  const unwrapped = unwrapReferenceMathBlocks(input);
+  assert.match(unwrapped, /^\[293\] S\. Hosseini/m);
+  assert.doesNotMatch(unwrapped, /\$\$\[293\]/);
+  assert.match(unwrapped, /\$\$x=1\$\$/);
+});
+
+test("validator does not flag a formula immediately followed by a table as wrapped math", () => {
+  const source = "## Introduction\n\nGiven:\n\n$$x=1$$\n\n<table><tr><td>A</td></tr></table>";
+  const translated = "# Title\n\n## 引言\n\n已知：\n\n$$x=1$$\n\n<table><tr><td>A</td></tr></table>";
+  const issues = validateTranslatedMarkdown(source, translated, "Title");
+  assert.equal(issues.some((issue) => issue.includes("表格被错误包裹在公式块中")), false);
+  assert.equal(issues.some((issue) => issue.includes("图片被错误包裹在公式块中")), false);
 });
 
 test("translation cache hash changes with model, parser settings, and glossary", () => {
