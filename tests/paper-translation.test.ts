@@ -407,6 +407,18 @@ test("source repair still keeps adjacent-call math next to parenthesized currenc
   assert.ok(protectedResult.protectedTokens.every((token) => !token.value.includes("million")));
 });
 
+test("source repair keeps paired pure-number math spans intact", () => {
+  for (const line of ["The year is $2021$.", "Let $10$ denote the horizon.", "The value is $3.14$."]) {
+    const repaired = repairSourceQuality(line);
+    assert.deepEqual(repaired.repairs, []);
+    assert.equal(repaired.markdown, line);
+    assert.equal(inspectSourceQuality(repaired.markdown).ok, true);
+    const protectedResult = protectStructuredMarkdown(repaired.markdown);
+    const expression = line.slice(line.indexOf("$"), line.lastIndexOf("$") + 1);
+    assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_MATH_") && token.value === expression));
+  }
+});
+
 test("text extraction completeness rejects sparse text and lost embedded images", () => {
   const dense = "## Abstract\n\n" + "The quick brown fox jumps over the lazy dog. ".repeat(60);
   assert.equal(assessTextExtractionCompleteness(dense, { pages: 4 }).ok, true);
@@ -454,6 +466,13 @@ test("completeness gate fails closed when pdfinfo or pdfimages are unavailable",
   assert.equal(bothUnavailable.ok, false);
   assert.ok(bothUnavailable.issues.some((issue) => issue.includes("pdfinfo")));
   assert.ok(bothUnavailable.issues.some((issue) => issue.includes("pdfimages")));
+});
+
+test("completeness gate fails when pagesAvailable is true but no positive page count was parsed", () => {
+  const longText = "## Abstract\n\n" + "Long balanced text without images. ".repeat(120);
+  const report = assessTextExtractionCompleteness(longText, { pages: 0, pagesAvailable: true, embeddedImages: 0, imagesAvailable: true });
+  assert.equal(report.ok, false);
+  assert.ok(report.issues.some((issue) => issue.includes("有效页数")));
 });
 
 test("semantic table-image decisions resolve a nearby table caption", () => {

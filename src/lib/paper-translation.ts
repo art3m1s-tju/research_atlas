@@ -63,6 +63,9 @@ function looksLikeInlineMathBody(body: string): boolean {
   // math, because there is whitespace before the parenthesis.
   if (/\b[A-Za-z]+\([^)]*\)/.test(trimmed)) return true;
   if (/\(\s*[A-Za-z]\s*\)/.test(trimmed)) return true;
+  // Paired pure numbers ("$2021$", "$10$", "$3.14$") are inline math; a
+  // currency span needs at least one following word to look like an amount.
+  if (/^\d+(?:[.,]\d+)*$/.test(trimmed)) return true;
   // Variable-like spans with space-separated single-letter tokens ("2 x",
   // "2 x y"); multi-letter words such as "billion" cannot match because each
   // token is exactly one letter and must be separated by whitespace.
@@ -71,12 +74,12 @@ function looksLikeInlineMathBody(body: string): boolean {
 
 /**
  * True when the text after a $ starts like a currency amount: a number
- * followed by an optional space-separated word ("20 million (USD) to ",
- * "8.5 billion in 2016 to ", "5-"). This runs only on dollars that were not
- * already paired as legal math spans, so "$2x+1$" is never affected.
+ * followed by at least one space-separated word ("20 million (USD) to ",
+ * "8.5 billion in 2016 to "). A bare number alone is not an amount; paired
+ * pure-number spans are already recognised as math before this runs.
  */
 function looksLikeCurrencyAmountSegment(segment: string): boolean {
-  return /^\d+(?:[.,]\d+)*(?:\s+[A-Za-z]{2,})*/.test(segment.trim());
+  return /^\d+(?:[.,]\d+)*(?:\s+[A-Za-z]{2,})+/.test(segment.trim());
 }
 
 /**
@@ -233,12 +236,10 @@ export function assessTextExtractionCompleteness(
   const minCharsPerPage = stats.minCharsPerPage ?? 500;
   if (stats.pagesAvailable === false) {
     issues.push("无法获取 PDF 页数（pdfinfo 不可用或失败），本地解析不能判定为完整");
-  } else if (pages > 0) {
-    if (textChars < pages * minCharsPerPage) {
-      issues.push(`文本覆盖率过低：约 ${Math.round(textChars / pages)} 字/页（${pages} 页），疑似扫描件或内容丢失`);
-    }
-  } else if (textChars < (stats.minChars ?? 1000)) {
-    issues.push("无法确认页数且文本过短");
+  } else if (pages <= 0) {
+    issues.push("无法确认 PDF 页数（pdfinfo 未返回有效页数），本地解析不能判定为完整");
+  } else if (textChars < pages * minCharsPerPage) {
+    issues.push(`文本覆盖率过低：约 ${Math.round(textChars / pages)} 字/页（${pages} 页），疑似扫描件或内容丢失`);
   }
   const embeddedImages = stats.embeddedImages || 0;
   const imageRefs = (markdown.match(/!\[[^\]]*\]\([^)]*\)|<img\b/gi) || []).length;
