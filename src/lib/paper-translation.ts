@@ -1099,10 +1099,35 @@ function sourceContainsBareVariable(source: string, expression: string) {
 function mathContentEquivalent(source: string, translated: string) {
   const remaining = [...mathExpressions(source)];
   const extras: string[] = [];
+  const sourceMathCanonical = mathExpressions(source).map((expression) => canonicalMathExpression(expression));
   for (const expression of mathExpressions(translated)) {
     const matchIndex = remaining.indexOf(expression);
     if (matchIndex >= 0) remaining.splice(matchIndex, 1);
     else if (!(isSimpleInlineVariable(expression) && sourceContainsBareVariable(source, expression))) extras.push(expression);
+  }
+  // Models often wrap only a subscript fragment ("Li$_{x}$Si") while leaving
+  // the base in prose. The rendering is equivalent to $Li_{x}Si$; accept such
+  // fragments when the same subscript occurs inside a source formula.
+  const fragmentSubscript = (expression: string) => expression.match(/^\$_(?:\{([^{}]*)\}|([A-Za-z0-9]+))\$$/)?.slice(1).find(Boolean);
+  const acceptedFragments: string[] = [];
+  for (let index = extras.length - 1; index >= 0; index -= 1) {
+    const subscript = fragmentSubscript(extras[index]);
+    if (subscript && sourceMathCanonical.some((formula) => formula.includes(`_{${subscript}}`))) {
+      acceptedFragments.push(extras[index]);
+      extras.splice(index, 1);
+    }
+  }
+  // A source formula that was split into fragments ("Li$_{x}$Si$_{1-x}$") is
+  // covered when every subscript appears as an accepted fragment and the
+  // formula's remaining skeleton is only letters/digits (no operators).
+  const coveredSubscripts = new Set(acceptedFragments.map((expression) => fragmentSubscript(expression)).filter(Boolean));
+  for (let index = remaining.length - 1; index >= 0; index -= 1) {
+    const formula = remaining[index];
+    const subscripts = [...formula.matchAll(/_(?:\{([^{}]*)\}|([A-Za-z0-9]+))/g)].map((match) => match[1] || match[2]).filter(Boolean);
+    const skeleton = formula.replace(/\$|\\[A-Za-z]+|\s|[\d{}_^-]/g, "");
+    if (subscripts.length && subscripts.every((subscript) => coveredSubscripts.has(subscript)) && /^[A-Za-z]+$/.test(skeleton)) {
+      remaining.splice(index, 1);
+    }
   }
   return { missing: remaining, extras };
 }

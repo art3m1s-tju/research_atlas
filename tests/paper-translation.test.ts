@@ -526,6 +526,14 @@ test("fragment validation accepts subscripted variable wrappers that occur in so
   assert.deepEqual(validateTranslatedFragment(source, translated), []);
 });
 
+test("fragment validation accepts empty-base subscript fragments present in source math", () => {
+  const source = "相图：$Li_{x}Si_{1-x}$ 结构";
+  const translated = "相图：Li$_{x}$Si$_{1-x}$ 结构";
+  assert.deepEqual(validateTranslatedFragment(source, translated), []);
+  const invented = validateTranslatedFragment(source, "相图：Li$_{y}$ 结构");
+  assert.ok(invented.some((issue) => issue.includes("公式内容或数量不一致")));
+});
+
 test("strict validation catches the observed title, section, table, and continuation failures", () => {
   const source = "## Introduction\n\n## Results\n\n| A | B |\n|---|---|\n| 1 | 2 |";
   const translated = "## 引言\n\n（上接前文）\n\n| A | B |\n|---|---|\n| 1 | 2 | 3 |";
