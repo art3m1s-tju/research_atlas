@@ -578,6 +578,7 @@ test("translation cache hash invalidates the previous format and prompt versions
   const paper = { title: "Paper", abstract: "Abstract", pdf_url: "https://example.com/paper.pdf", doi: "10.1/example" };
   const runtime = { model: "model-a", parser: "docling", formulaEnabled: "1", glossary: "A" };
   const current = translationSourceHash(paper, runtime);
+  assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v15-source-ir" }));
   assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v14-source-ir" }));
   assert.notEqual(current, translationSourceHash(paper, { ...runtime, promptVersion: "academic-markdown-v9-source-ir" }));
   assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v14-source-ir", promptVersion: "academic-markdown-v9-source-ir" }));

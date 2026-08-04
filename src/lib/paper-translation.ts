@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v15-source-ir";
+export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v16-source-ir";
 export const TRANSLATION_PROMPT_VERSION = "academic-markdown-v10-source-ir";
 
 export type SourceQualityIssue = {
