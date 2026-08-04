@@ -360,6 +360,30 @@ test("source repair keeps a leading-digit math formula intact next to currency",
   assert.ok(protectedResult.protectedTokens.every((token) => !token.value.includes("million")));
 });
 
+test("source repair keeps leading-digit math with bare function names intact", () => {
+  for (const line of ["The loss is $20 log(x)$.", "The bound is $2 max(x, y)$."]) {
+    const repaired = repairSourceQuality(line);
+    assert.deepEqual(repaired.repairs, []);
+    assert.equal(repaired.markdown, line);
+    assert.equal(inspectSourceQuality(repaired.markdown).ok, true);
+    const protectedResult = protectStructuredMarkdown(repaired.markdown);
+    const expression = line.slice(line.indexOf("$"), line.lastIndexOf("$") + 1);
+    assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_MATH_") && token.value === expression));
+  }
+});
+
+test("source repair escapes two amounts but keeps bare-function math spans", () => {
+  const line = "Costs rose from $5 million in 2016 to $8 million in 2021; the bound is $20 log(x)$ and $2 max(x, y)$.";
+  const repaired = repairSourceQuality(line);
+  assert.ok(repaired.repairs.some((item) => item.code === "currency_dollar_escaped"));
+  assert.equal((repaired.markdown.match(/(?<!\\)\$/g) || []).length, 4);
+  assert.equal(inspectSourceQuality(repaired.markdown).ok, true);
+  const protectedResult = protectStructuredMarkdown(repaired.markdown);
+  assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_MATH_") && token.value === "$20 log(x)$"));
+  assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_MATH_") && token.value === "$2 max(x, y)$"));
+  assert.ok(protectedResult.protectedTokens.every((token) => !token.value.includes("million")));
+});
+
 test("text extraction completeness rejects sparse text and lost embedded images", () => {
   const dense = "## Abstract\n\n" + "The quick brown fox jumps over the lazy dog. ".repeat(60);
   assert.equal(assessTextExtractionCompleteness(dense, { pages: 4 }).ok, true);
@@ -375,6 +399,24 @@ test("text extraction completeness rejects sparse text and lost embedded images"
   assert.ok(partialImages.issues.some((issue) => issue.includes("仅保留")));
   const mostImages = assessTextExtractionCompleteness(`${dense}\n\n${Array.from({ length: 9 }, (_value, index) => `![Image](assets/figure-${index + 1}.png)`).join("\n")}`, { pages: 4, embeddedImages: 9 });
   assert.equal(mostImages.ok, true);
+});
+
+test("docling-like long output with zero image references is rejected when the PDF has embedded images", () => {
+  // Simulates a Docling parse that is long and structurally balanced but
+  // dropped every figure/table: it must fail the same completeness gate that
+  // is now applied to Docling manifests before publication.
+  const longBalanced = [
+    "## Abstract",
+    "",
+    "A long balanced paragraph with no images. ".repeat(80),
+    "",
+    "## Results",
+    "",
+    "More text that is structurally fine but contains no figure references. ".repeat(80),
+  ].join("\n");
+  const report = assessTextExtractionCompleteness(longBalanced, { pages: 12, embeddedImages: 9 });
+  assert.equal(report.ok, false);
+  assert.ok(report.issues.some((issue) => issue.includes("嵌入图片")));
 });
 
 test("semantic table-image decisions resolve a nearby table caption", () => {

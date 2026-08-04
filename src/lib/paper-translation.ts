@@ -47,6 +47,28 @@ function repeatedRun(text: string) {
 }
 
 /**
+ * True when a $...$ body has enough mathematical structure (operators,
+ * parentheses, LaTeX, or single-letter variable tokens) that the enclosing
+ * dollars must be a real formula rather than currency. This is intentionally
+ * structural: bare function names such as log/max/min are covered through
+ * their parentheses, and prose words such as "billion" are not.
+ */
+function looksLikeInlineMathBody(body: string): boolean {
+  const trimmed = body.trim();
+  if (!trimmed) return false;
+  if (/\\[A-Za-z]+/.test(trimmed)) return true;
+  if (/[+\-*/=<>&|^_~%]/.test(trimmed)) return true;
+  // Function calls (log(x), max(x, y)) and single-variable grouping ((x)).
+  // Natural-language parentheses such as "(in 2021)" do not match either.
+  if (/\b[A-Za-z]+\s*\([^)]*\)/.test(trimmed)) return true;
+  if (/\(\s*[A-Za-z]\s*\)/.test(trimmed)) return true;
+  // Variable-like spans with space-separated single-letter tokens ("2 x",
+  // "2 x y"); multi-letter words such as "billion" cannot match because each
+  // token is exactly one letter and must be separated by whitespace.
+  return /^\d+(?:\.\d+)?(?:\s+[A-Za-z])+$/.test(trimmed);
+}
+
+/**
  * Repair only high-confidence parser damage before the source quality gate.
  * We never rewrite ordinary prose here: the repeated suffix must dominate a
  * long line, and truncated fragments are limited to known missing prefixes.
@@ -67,20 +89,46 @@ export function repairSourceQuality(markdown: string) {
     if (!text || /<table\b/i.test(text)) return;
     // PaddleOCR frequently turns currency amounts ("$12 billion") into $ tokens,
     // which then fails the math-delimiter gate and forces a full cloud OCR retry.
-    // Decide per $ by what follows it and by the text before the next $, so a
-    // line mixing two amounts and a real formula ("$8.5 billion ... $12 billion
-    // ... $x+1$") escapes only the currency symbols.
+    // First pair up every legal inline/display math span, then escape only the
+    // remaining $ that look like currency. This keeps "$20 log(x)$" and
+    // "$2 max(x, y)$" intact while still repairing two-amount lines.
     const dollars = [...text.matchAll(/(?<!\\)\$/g)];
+    const mathDelimiters = new Set<number>();
+    for (const display of text.matchAll(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$/g)) {
+      const start = display.index ?? 0;
+      const end = start + display[0].length;
+      mathDelimiters.add(start);
+      mathDelimiters.add(start + 1);
+      mathDelimiters.add(end - 2);
+      mathDelimiters.add(end - 1);
+    }
+    for (let index = 0; index + 1 < dollars.length; index += 1) {
+      const open = dollars[index].index ?? 0;
+      const close = dollars[index + 1].index ?? 0;
+      if (mathDelimiters.has(open) || mathDelimiters.has(close)) continue;
+      if (looksLikeInlineMathBody(text.slice(open + 1, close))) {
+        mathDelimiters.add(open);
+        mathDelimiters.add(close);
+      }
+    }
     const currencyPositions = new Set<number>();
     for (let index = 0; index < dollars.length; index += 1) {
       const position = dollars[index].index || 0;
+      if (mathDelimiters.has(position)) continue;
       if (!/^\d/.test(text.slice(position + 1))) continue;
-      const next = dollars[index + 1];
-      if (!next) {
+      let nextUnmarked = -1;
+      for (let other = index + 1; other < dollars.length; other += 1) {
+        const otherPosition = dollars[other].index || 0;
+        if (!mathDelimiters.has(otherPosition)) {
+          nextUnmarked = otherPosition;
+          break;
+        }
+      }
+      if (nextUnmarked < 0) {
         currencyPositions.add(position);
         continue;
       }
-      const segment = text.slice(position + 1, next.index || 0);
+      const segment = text.slice(position + 1, nextUnmarked);
       const proseLike = !segment.includes("\\") && /\b[A-Za-z]{2,}\b/.test(segment.replace(/\\[A-Za-z]+/g, " "));
       if (proseLike) currencyPositions.add(position);
     }

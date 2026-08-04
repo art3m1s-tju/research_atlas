@@ -307,8 +307,15 @@ async function runDoclingParser(pdfPath: string, outputDirectory: string, onProg
   const manifest = JSON.parse(lastLine);
   if (manifest?.parser !== "docling" || !manifest?.markdown) throw new Error("本地 Docling 解析器没有返回有效 manifest");
   const markdown = await fs.readFile(path.join(outputDirectory, String(manifest.markdown)), "utf8");
-  const hashedManifest = await writePdfHashManifest(pdfPath, outputDirectory, manifest);
-  return { markdown, parser: "docling" as const, manifest: hashedManifest };
+  const stats = await pdfExtractionStats(pdfPath);
+  const completeness = assessTextExtractionCompleteness(markdown, stats);
+  const hashedManifest = await writePdfHashManifest(pdfPath, outputDirectory, {
+    ...manifest,
+    pages: stats.pages,
+    embedded_images: stats.embeddedImages,
+    text_chars: completeness.textChars,
+  });
+  return { markdown, parser: "docling" as const, manifest: hashedManifest, completeness };
 }
 
 function pdftotextHeading(line: string) {
@@ -354,7 +361,13 @@ async function runPdftotextParser(pdfPath: string, outputDirectory: string, onPr
 
 async function parseStructuredPdf(pdfPath: string, sourceUrl: string, outputDirectory: string, onProgress: ParserProgress) {
   const parserMode = (process.env.TRANSLATION_PARSER || "auto").toLowerCase();
-  if (parserMode === "docling") return runDoclingParser(pdfPath, outputDirectory, onProgress);
+  if (parserMode === "docling") {
+    const docling = await runDoclingParser(pdfPath, outputDirectory, onProgress);
+    if (!docling.completeness.ok) {
+      throw new Error(`SOURCE_QUALITY:Docling 解析未通过完整性门禁：${docling.completeness.issues.slice(0, 6).join("；") || "未知完整性错误"}`);
+    }
+    return docling;
+  }
   if (parserMode === "paddleocr" || parserMode === "paddleocr-only") {
     if (!process.env.PADDLEOCR_ACCESS_TOKEN) throw new Error("PADDLEOCR_ACCESS_TOKEN 未配置，且当前 TRANSLATION_PARSER 只允许云端解析");
     return parseWithPaddleOcr(pdfPath, sourceUrl, outputDirectory, onProgress);
@@ -363,8 +376,9 @@ async function parseStructuredPdf(pdfPath: string, sourceUrl: string, outputDire
   let local: { markdown: string; parser: string; manifest: Record<string, unknown> } | null = null;
   try {
     const docling = await runDoclingParser(pdfPath, outputDirectory, onProgress);
-    if (inspectSourceQuality(docling.markdown).ok) return docling;
-    console.warn("  Docling 解析结果未通过质量门禁，回退到 PaddleOCR");
+    if (inspectSourceQuality(docling.markdown).ok && docling.completeness.ok) return docling;
+    const issues = [...docling.completeness.issues, ...inspectSourceQuality(docling.markdown).issues.map((issue) => issue.message)];
+    console.warn(`  Docling 解析结果未通过完整性门禁：${issues.slice(0, 4).join("；")}，回退到 PaddleOCR`);
   } catch (error) {
     console.warn(`  Docling 本地解析不可用：${networkErrorDetail(error)}`);
     try {
@@ -543,6 +557,11 @@ async function tryReuseParsedSource(pdfPath: string, outputDirectory: string, so
     if (!manifest.pdf_sha256 || manifest.pdf_sha256 !== currentHash) return null;
     const reusable = await repairReusableSource(markdown, outputDirectory, { ...manifest, pdf_sha256: currentHash });
     if (!inspectSourceQuality(reusable.markdown).ok) return null;
+    if (manifest.parser === "docling" || manifest.parser === "pdftotext") {
+      const stats = await pdfExtractionStats(pdfPath);
+      const completeness = assessTextExtractionCompleteness(reusable.markdown, stats);
+      if (!completeness.ok) return null;
+    }
     onProgress("parsing", `正在复用已有的 ${String(manifest.parser)} 结构化解析结果`);
     return { text: reusable.markdown, url: sourceUrl, pdfPath, parser: String(manifest.parser), manifest: reusable.manifest };
   } catch {
