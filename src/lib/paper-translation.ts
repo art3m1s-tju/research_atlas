@@ -591,7 +591,12 @@ export function buildStructuredBindingManifest(markdown: string): StructuredBind
       captionNumber: selected?.caption.number,
       captionText: selected?.caption.text,
       distance: selected?.distance,
-      ambiguous: !selected || !selected.isDirectional || selected.caption.kind !== object.kind || selected.distance > 1800,
+      // Without captions there is nothing to bind: the parser's intrinsic
+      // kind (HTML table vs image) is authoritative and must not block the
+      // paper waiting for a semantic reviewer.
+      ambiguous: captions.length === 0
+        ? false
+        : !selected || !selected.isDirectional || selected.caption.kind !== object.kind || selected.distance > 1800,
     };
     if (selected) usedCaptions.add(selected.caption.id);
     if (record.ambiguous) ambiguous.push(id);
