@@ -18,6 +18,7 @@ import {
   prepareTranslationSource,
   protectStructuredMarkdown,
   restoreHeadingLayout,
+  restoreBindingOrder,
   restoreCaptionSequence,
   restoreStructuredMarkdown,
   restoreTableLayout,
@@ -181,6 +182,22 @@ test("extra numbered headings are demoted to bold when the source numbering patt
   );
   assert.equal(normalizeExtraNumberedHeadings(source, "## 4. 环境是认知系统的一部分。"), "## 4. 环境是认知系统的一部分。");
   assert.equal(normalizeExtraNumberedHeadings("## Methodology", "## 方法\n\n## 5. 额外"), "## 方法\n\n## 5. 额外");
+});
+
+test("restoreBindingOrder reorders swapped atomic blocks while keeping translated content", () => {
+  const source = [
+    "<!--ATLAS_BIND_figure-004-->![Image](assets/a.png)<!--ATLAS_BIND_END_figure-004-->",
+    "<!--ATLAS_BIND_figure-005-->![Image](assets/b.png)<!--ATLAS_BIND_END_figure-005-->",
+  ].join("\n\n");
+  const translated = [
+    "<!--ATLAS_BIND_figure-005-->![Image](assets/b.png)<!--ATLAS_BIND_END_figure-005-->",
+    "<!--ATLAS_BIND_figure-004-->![Image](assets/a.png)<!--ATLAS_BIND_END_figure-004-->",
+  ].join("\n\n");
+  const restored = restoreBindingOrder(source, translated);
+  assert.ok(restored.indexOf("figure-004") < restored.indexOf("figure-005"));
+  assert.match(restored, /assets\/a\.png/);
+  assert.match(restored, /assets\/b\.png/);
+  assert.equal(restoreBindingOrder(source, "<!--ATLAS_BIND_figure-003-->x<!--ATLAS_BIND_END_figure-003-->"), "<!--ATLAS_BIND_figure-003-->x<!--ATLAS_BIND_END_figure-003-->");
 });
 
 test("pdfLinksFromLandingHtml resolves OJS citation metadata and download links", () => {

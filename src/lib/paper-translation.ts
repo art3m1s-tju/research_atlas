@@ -1011,6 +1011,38 @@ export function normalizeExtraNumberedHeadings(source: string, translated: strin
   );
 }
 
+const BINDING_BLOCK_PATTERN = /<!--ATLAS_BIND_(figure|table|table_image)-\d{3}-->[\s\S]*?<!--ATLAS_BIND_END_(figure|table|table_image)-\d{3}-->/g;
+
+/**
+ * Models occasionally swap two adjacent figure/table binding blocks. Each
+ * block is atomic; keep the translated content but restore the source order of
+ * the block ids so the document structure stays source-faithful.
+ */
+export function restoreBindingOrder(source: string, translated: string) {
+  const openId = (block: string) => block.match(/ATLAS_BIND_(?:END_)?(figure|table|table_image)-\d{3}/)?.[0] || "";
+  const sourceOrder = [...source.matchAll(BINDING_BLOCK_PATTERN)].map((match) => openId(match[0]));
+  const translatedMatches = [...translated.matchAll(BINDING_BLOCK_PATTERN)].map((match) => ({
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+    id: openId(match[0]),
+    text: match[0],
+  }));
+  const sorted = (ids: string[]) => [...ids].sort().join("|");
+  if (!sourceOrder.length || translatedMatches.length !== sourceOrder.length || sorted(translatedMatches.map((item) => item.id)) !== sorted(sourceOrder)) {
+    return translated;
+  }
+  const byId = new Map(translatedMatches.map((item) => [item.id, item.text]));
+  const orderedTexts = sourceOrder.map((id) => byId.get(id) as string);
+  let result = "";
+  let cursor = 0;
+  for (let index = 0; index < translatedMatches.length; index += 1) {
+    const match = translatedMatches[index];
+    result += translated.slice(cursor, match.start) + orderedTexts[index];
+    cursor = match.end;
+  }
+  return result + translated.slice(cursor);
+}
+
 function markdownImages(markdown: string) {
   return [
     ...[...markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((match) => match[1]),
