@@ -327,13 +327,37 @@ test("source repair escapes odd currency dollars without touching math", () => {
 
   const mixed = "Sales reach $12 billion in 2021 and $8.5 billion in 2016.";
   const mixedRepaired = repairSourceQuality(mixed);
-  assert.deepEqual(mixedRepaired.repairs, []);
-  assert.equal(mixedRepaired.markdown, mixed);
+  assert.ok(mixedRepaired.repairs.some((item) => item.code === "currency_dollar_escaped"));
+  assert.equal((mixedRepaired.markdown.match(/(?<!\\)\$/g) || []).length, 0);
+  assert.equal(inspectSourceQuality(mixedRepaired.markdown).ok, true);
 
   const math = "Given $x$ and $y$, solve for $z$.";
   const mathRepaired = repairSourceQuality(math);
   assert.deepEqual(mathRepaired.repairs, []);
   assert.equal(mathRepaired.markdown, math);
+});
+
+test("currency dollars are escaped per-context and never protected as math", () => {
+  const line = "Sales rose from $8.5 billion in 2016 to $12 billion in 2021, where $x^2 + y^2 = z^2$ holds.";
+  const repaired = repairSourceQuality(line);
+  assert.ok(repaired.repairs.some((item) => item.code === "currency_dollar_escaped"));
+  // Only the real formula keeps unescaped delimiters.
+  assert.equal((repaired.markdown.match(/(?<!\\)\$/g) || []).length, 2);
+  assert.equal(inspectSourceQuality(repaired.markdown).ok, true);
+  const protectedResult = protectStructuredMarkdown(repaired.markdown);
+  assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_MATH_") && token.value === "$x^2 + y^2 = z^2$"));
+  assert.ok(protectedResult.protectedTokens.every((token) => !token.value.includes("billion")));
+  assert.ok(protectedResult.text.includes("\\$8.5 billion in 2016 to \\$12 billion"));
+});
+
+test("source repair keeps a leading-digit math formula intact next to currency", () => {
+  const line = "Revenue hit $5 million, and the model satisfies $2x + 1 = y$.";
+  const repaired = repairSourceQuality(line);
+  assert.ok(repaired.repairs.some((item) => item.code === "currency_dollar_escaped"));
+  assert.equal((repaired.markdown.match(/(?<!\\)\$/g) || []).length, 2);
+  const protectedResult = protectStructuredMarkdown(repaired.markdown);
+  assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_MATH_") && token.value === "$2x + 1 = y$"));
+  assert.ok(protectedResult.protectedTokens.every((token) => !token.value.includes("million")));
 });
 
 test("text extraction completeness rejects sparse text and lost embedded images", () => {
@@ -346,8 +370,11 @@ test("text extraction completeness rejects sparse text and lost embedded images"
   const lostImages = assessTextExtractionCompleteness(dense, { pages: 4, embeddedImages: 9 });
   assert.equal(lostImages.ok, false);
   assert.ok(lostImages.issues.some((issue) => issue.includes("嵌入图片")));
-  const keptImages = assessTextExtractionCompleteness(`${dense}\n\n![Image](assets/figure-1.png)`, { pages: 4, embeddedImages: 9 });
-  assert.equal(keptImages.ok, true);
+  const partialImages = assessTextExtractionCompleteness(`${dense}\n\n![Image](assets/figure-1.png)`, { pages: 4, embeddedImages: 9 });
+  assert.equal(partialImages.ok, false);
+  assert.ok(partialImages.issues.some((issue) => issue.includes("仅保留")));
+  const mostImages = assessTextExtractionCompleteness(`${dense}\n\n${Array.from({ length: 9 }, (_value, index) => `![Image](assets/figure-${index + 1}.png)`).join("\n")}`, { pages: 4, embeddedImages: 9 });
+  assert.equal(mostImages.ok, true);
 });
 
 test("semantic table-image decisions resolve a nearby table caption", () => {
@@ -449,6 +476,15 @@ test("translation cache hash changes with model, parser settings, and glossary",
   assert.notEqual(baseline, translationSourceHash(paper, { model: "model-a", parser: "docling", formulaEnabled: "1", glossary: "B" }));
 });
 
+test("translation cache hash invalidates the previous format and prompt versions", () => {
+  const paper = { title: "Paper", abstract: "Abstract", pdf_url: "https://example.com/paper.pdf", doi: "10.1/example" };
+  const runtime = { model: "model-a", parser: "docling", formulaEnabled: "1", glossary: "A" };
+  const current = translationSourceHash(paper, runtime);
+  assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v14-source-ir" }));
+  assert.notEqual(current, translationSourceHash(paper, { ...runtime, promptVersion: "academic-markdown-v9-source-ir" }));
+  assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v14-source-ir", promptVersion: "academic-markdown-v9-source-ir" }));
+});
+
 test("translationUrlCandidates adds a DOI landing source and prefers direct PDFs", () => {
   const candidates = translationUrlCandidates(
     { pdf_url: null, arxiv_id: null, doi: "10.1000/xyz" },
@@ -541,6 +577,13 @@ test("fragment validation accepts empty-base subscript fragments present in sour
   assert.deepEqual(validateTranslatedFragment(source, translated), []);
   const invented = validateTranslatedFragment(source, "相图：Li$_{y}$ 结构");
   assert.ok(invented.some((issue) => issue.includes("公式内容或数量不一致")));
+});
+
+test("fragment validation rejects a source formula whose base letters were swapped", () => {
+  const issues = validateTranslatedFragment("Phase: $Li_{x}Si_{1-x}$ structure", "相图：Al$_{x}$Fe$_{1-x}$ 结构");
+  assert.ok(issues.some((issue) => issue.includes("公式内容或数量不一致")));
+  const reordered = validateTranslatedFragment("Phase: $Li_{x}Si_{1-x}$ structure", "相图：Si$_{1-x}$Li$_{x}$ 结构");
+  assert.ok(reordered.some((issue) => issue.includes("公式内容或数量不一致")));
 });
 
 test("strict validation catches the observed title, section, table, and continuation failures", () => {

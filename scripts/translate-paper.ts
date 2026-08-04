@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
 import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
-import { failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationProgress } from "../src/lib/translation-job";
+import { assertTranslationOwnership, claimTranslationJob, failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationJobMetadata, updateTranslationProgress } from "../src/lib/translation-job";
 
 const PADDLEOCR_DEFAULT_BASE_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
 const PADDLEOCR_DEFAULT_MODEL = "PaddleOCR-VL-1.6";
@@ -17,6 +17,7 @@ let dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atla
 let model = process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
 let apiBaseUrl = process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com";
 let concurrency = Math.max(1, Math.min(4, Number(process.env.TRANSLATION_CONCURRENCY || 2)));
+let activeJobToken = "";
 
 function loadLocalEnv() {
   if (!existsSync(".env.local")) return;
@@ -816,19 +817,6 @@ async function main() {
   const paper = db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE id = ?").get(paperId) as any;
   if (!paper) throw new Error("论文不存在");
   if (!process.env.DEEPSEEK_API_KEY) throw new Error("DEEPSEEK_API_KEY 未配置");
-  const jobToken = process.env.TRANSLATION_JOB_TOKEN || "";
-  startTranslationJob(db, paperId, jobToken, process.pid, leaseMinutes);
-  const updateProgress = (phase: string, message: string, current = 0, total = 0) => {
-    updateTranslationProgress(db, paperId, jobToken, leaseMinutes, phase, message, current, total);
-  };
-  const heartbeat = setInterval(() => {
-    try {
-      refreshTranslationLease(db, paperId, jobToken, leaseMinutes);
-    } catch {
-      // A transient heartbeat failure must not kill the translation worker.
-    }
-  }, 60000);
-  heartbeat.unref();
   const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
   const glossary = existsSync(terminologyPath) ? await fs.readFile(terminologyPath, "utf8") : "# 术语表\n\n以论文原文为准。\n";
   const sourceHash = translationSourceHash(paper, {
@@ -838,6 +826,40 @@ async function main() {
     glossary,
   });
   const outputDirectory = path.join(process.cwd(), translationDirectory(paperId));
+  let jobToken = process.env.TRANSLATION_JOB_TOKEN || "";
+  if (!jobToken) {
+    // Direct CLI runs are a formal entry point: claim a managed row so the
+    // worker is fenced like an API-started job, and so artifacts are never
+    // produced without a paper_translations record.
+    const claim = claimTranslationJob(db, paperId, sourceHash, translationDirectory(paperId));
+    if (!claim.claimed || !claim.jobToken) {
+      throw new Error("无法启动直接翻译：该论文已有活动任务（pending/running），请通过 API 发起或等待其完成");
+    }
+    jobToken = claim.jobToken;
+  }
+  activeJobToken = jobToken;
+  const started = startTranslationJob(db, paperId, jobToken, process.pid, leaseMinutes);
+  if (started.changes !== 1) throw new Error("翻译任务启动失败：job token 已失效或任务已被其他 worker 接管");
+  const failureController = new AbortController();
+  const updateProgress = (phase: string, message: string, current = 0, total = 0) => {
+    const result = updateTranslationProgress(db, paperId, jobToken, leaseMinutes, phase, message, current, total);
+    if (result.changes !== 1) throw new Error("翻译任务所有权校验失败：job token 已失效，停止更新进度");
+    return result;
+  };
+  const heartbeat = setInterval(() => {
+    let refreshed: { changes: number } | null = null;
+    try {
+      refreshed = refreshTranslationLease(db, paperId, jobToken, leaseMinutes);
+    } catch {
+      // A transient DB failure must not kill the worker; the next heartbeat retries.
+      return;
+    }
+    if (refreshed.changes !== 1) {
+      clearInterval(heartbeat);
+      failureController.abort(new Error("翻译任务所有权校验失败：job token 已失效，立即停止"));
+    }
+  }, 60000);
+  heartbeat.unref();
   await fs.mkdir(outputDirectory, { recursive: true });
   await fs.rm(path.join(outputDirectory, "translation_zh.md"), { force: true });
   await fs.rm(path.join(outputDirectory, "translation_candidate.md"), { force: true });
@@ -863,6 +885,7 @@ async function main() {
   ]);
   applySemanticBindingDecisions(bindingManifest, semanticReview.decisions);
   if (bindingManifest.ambiguous.length) {
+    assertTranslationOwnership(db, paperId, jobToken, leaseMinutes);
     await fs.writeFile(path.join(outputDirectory, "structure_manifest.json"), JSON.stringify({ ...bindingManifest, semantic_review: semanticReview, phase: "binding_review" }, null, 2), "utf8");
     throw new Error(`STRUCTURE_QUALITY:图表绑定仍有 ${bindingManifest.ambiguous.length} 个歧义对象，未发布译文`);
   }
@@ -870,6 +893,7 @@ async function main() {
   const resolvedManifest = buildStructuredBindingManifest(boundSource);
   applySemanticBindingDecisions(resolvedManifest, semanticReview.decisions);
   if (resolvedManifest.ambiguous.length) {
+    assertTranslationOwnership(db, paperId, jobToken, leaseMinutes);
     await fs.writeFile(path.join(outputDirectory, "structure_manifest.json"), JSON.stringify({ ...resolvedManifest, semantic_review: semanticReview, phase: "binding_review" }, null, 2), "utf8");
     throw new Error(`STRUCTURE_QUALITY:图表绑定在重新排版后仍有 ${resolvedManifest.ambiguous.length} 个歧义对象，未发布译文`);
   }
@@ -882,8 +906,15 @@ async function main() {
   await fs.mkdir(chunkDirectory, { recursive: true });
   await fs.writeFile(path.join(outputDirectory, "source.md"), `# ${paper.title}\n\n来源：${extracted.url}\n\n解析器：${extracted.parser}\n\n---\n\n${source}\n`, "utf8");
   await fs.writeFile(path.join(outputDirectory, "glossary.md"), glossary, "utf8");
-  db.prepare("UPDATE paper_translations SET status = 'running', source_hash = ?, source_url = ?, output_dir = ?, source_chars = ?, translated_chars = 0, error = NULL, progress_phase = 'translating', progress_message = ?, progress_current = 0, progress_total = ?, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
-    .run(sourceHash, extracted.url, translationDirectory(paperId), source.length, `正在翻译 0/${chunks.length} 个章节分块`, chunks.length, paperId);
+  const metadataResult = updateTranslationJobMetadata(db, paperId, jobToken, leaseMinutes, {
+    sourceHash,
+    sourceUrl: extracted.url,
+    outputDir: translationDirectory(paperId),
+    sourceChars: source.length,
+    progressMessage: `正在翻译 0/${chunks.length} 个章节分块`,
+    progressTotal: chunks.length,
+  });
+  if (metadataResult.changes !== 1) throw new Error("翻译任务所有权校验失败：job token 已失效，停止写入源字段");
 
   const results = new Array<string>(chunks.length);
   let cursor = 0;
@@ -893,7 +924,6 @@ async function main() {
     completedChunks += 1;
     updateProgress("translating", `正在翻译 ${completedChunks}/${chunks.length} 个章节分块`, completedChunks, chunks.length);
   };
-  const failureController = new AbortController();
   let failure: unknown = null;
   const worker = async () => {
     while (true) {
@@ -941,6 +971,8 @@ async function main() {
   const translationPath = path.join(outputDirectory, "translation_zh.md");
   const candidatePath = path.join(outputDirectory, "translation_candidate.md");
   const reportPath = path.join(outputDirectory, "translation_report.md");
+  if (failureController.signal.aborted) throw failureController.signal.reason;
+  assertTranslationOwnership(db, paperId, jobToken, leaseMinutes);
   const temporaryTranslationPath = `${translationPath}.tmp-${process.pid}`;
   const temporaryCandidatePath = `${candidatePath}.tmp-${process.pid}`;
   const temporaryReportPath = `${reportPath}.tmp-${process.pid}`;
@@ -978,7 +1010,7 @@ main().catch(async (error) => {
   if (Number.isInteger(paperId) && paperId > 0) {
     const db = new Database(dbPath);
     ensureResearchFeatureSchema(db);
-    const jobToken = process.env.TRANSLATION_JOB_TOKEN || "";
+    const jobToken = activeJobToken || process.env.TRANSLATION_JOB_TOKEN || "";
     const message = error instanceof Error ? error.message : String(error);
     const needsReview = /^(?:SOURCE_QUALITY|STRUCTURE_QUALITY):/.test(message);
     const structureIssue = /^STRUCTURE_QUALITY:/.test(message);

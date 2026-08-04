@@ -90,9 +90,14 @@ function sleep(ms: number, signal?: AbortSignal) {
   });
 }
 
-function attemptSignal(initSignal: AbortSignal | null | undefined, optionsSignal: AbortSignal | undefined, timeoutMs: number) {
-  const signals = [initSignal, optionsSignal, AbortSignal.timeout(timeoutMs)].filter(Boolean) as AbortSignal[];
+function callerAbortSignal(initSignal: AbortSignal | null | undefined, optionsSignal: AbortSignal | undefined) {
+  const signals = [initSignal, optionsSignal].filter(Boolean) as AbortSignal[];
   return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+}
+
+function attemptSignal(callerSignal: AbortSignal | undefined, timeoutMs: number) {
+  if (!callerSignal) return AbortSignal.timeout(timeoutMs);
+  return AbortSignal.any([callerSignal, AbortSignal.timeout(timeoutMs)]);
 }
 
 export async function fetchWithRetry(
@@ -109,6 +114,7 @@ export async function fetchWithRetry(
   const retryableStatus = options.retryableStatus ?? isRetryableHttpStatus;
   const retryStatus = !isPost || options.retryStatusOnPost === true;
   const headers = new Headers(init.headers);
+  const callerSignal = callerAbortSignal(init.signal, options.signal);
   if (isPost && options.idempotencyKey && !headers.has("X-Idempotency-Key")) {
     headers.set("X-Idempotency-Key", options.idempotencyKey);
   }
@@ -117,14 +123,14 @@ export async function fetchWithRetry(
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     let response: Response | undefined;
     try {
-      response = await fetch(url, { ...init, headers, signal: attemptSignal(init.signal, options.signal, timeoutMs) });
+      response = await fetch(url, { ...init, headers, signal: attemptSignal(callerSignal, timeoutMs) });
     } catch (error) {
       lastError = error;
       const retryable = (!isPost || options.retryPost === true) && isRetryableNetworkError(error);
       if (!retryable || attempt === attempts) throw error;
       const delayMs = backoffDelay(attempt, baseDelayMs, maxDelayMs);
       options.onRetry?.({ attempt, error, delayMs });
-      await sleep(delayMs, options.signal);
+      await sleep(delayMs, callerSignal);
       continue;
     }
     const retryable = retryStatus && retryableStatus(response.status);
@@ -132,7 +138,7 @@ export async function fetchWithRetry(
     await response.arrayBuffer().catch(() => null);
     const delayMs = retryAfterMs(response, backoffDelay(attempt, baseDelayMs, maxDelayMs));
     options.onRetry?.({ attempt, status: response.status, delayMs });
-    await sleep(delayMs, options.signal);
+    await sleep(delayMs, callerSignal);
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }

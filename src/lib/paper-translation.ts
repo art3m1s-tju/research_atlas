@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
-export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v14-source-ir";
-export const TRANSLATION_PROMPT_VERSION = "academic-markdown-v9-source-ir";
+export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v15-source-ir";
+export const TRANSLATION_PROMPT_VERSION = "academic-markdown-v10-source-ir";
 
 export type SourceQualityIssue = {
   code: "repeated_text" | "unbalanced_html" | "unbalanced_math" | "orphan_fragment" | "oversized_line";
@@ -65,15 +65,35 @@ export function repairSourceQuality(markdown: string) {
   lines.forEach((line, index) => {
     const text = line.trim();
     if (!text || /<table\b/i.test(text)) return;
-    // PaddleOCR frequently turns currency amounts ("$12 billion") into an odd
-    // number of $ tokens, which then fails the math-delimiter gate and forces a
-    // full cloud OCR retry. Only repair lines where every $ starts a number, so
-    // real inline/display math is never touched.
+    // PaddleOCR frequently turns currency amounts ("$12 billion") into $ tokens,
+    // which then fails the math-delimiter gate and forces a full cloud OCR retry.
+    // Decide per $ by what follows it and by the text before the next $, so a
+    // line mixing two amounts and a real formula ("$8.5 billion ... $12 billion
+    // ... $x+1$") escapes only the currency symbols.
     const dollars = [...text.matchAll(/(?<!\\)\$/g)];
-    if (dollars.length > 0 && dollars.length % 2 === 1 && dollars.every((match) => /^\d/.test(text.slice((match.index || 0) + 1)))) {
-      const repairedLine = text.replace(/(?<!\\)\$(?=\d)/g, "\\$");
+    const currencyPositions = new Set<number>();
+    for (let index = 0; index < dollars.length; index += 1) {
+      const position = dollars[index].index || 0;
+      if (!/^\d/.test(text.slice(position + 1))) continue;
+      const next = dollars[index + 1];
+      if (!next) {
+        currencyPositions.add(position);
+        continue;
+      }
+      const segment = text.slice(position + 1, next.index || 0);
+      const proseLike = !segment.includes("\\") && /\b[A-Za-z]{2,}\b/.test(segment.replace(/\\[A-Za-z]+/g, " "));
+      if (proseLike) currencyPositions.add(position);
+    }
+    if (currencyPositions.size > 0) {
+      let repairedLine = "";
+      let cursor = 0;
+      for (const position of [...currencyPositions].sort((left, right) => left - right)) {
+        repairedLine += `${text.slice(cursor, position)}\\$`;
+        cursor = position + 1;
+      }
+      repairedLine += text.slice(cursor);
       lines[index] = line.replace(text, repairedLine);
-      repairs.push({ code: "currency_dollar_escaped", line: index + 1, message: `第 ${index + 1} 行已转义 ${dollars.length} 个货币符号 $，避免被误判为未闭合公式` });
+      repairs.push({ code: "currency_dollar_escaped", line: index + 1, message: `第 ${index + 1} 行已转义 ${currencyPositions.size} 个货币符号 $，避免被误判为公式` });
       return;
     }
     const run = repeatedRun(text);
@@ -121,7 +141,7 @@ export function inspectSourceQuality(markdown: string): SourceQualityReport {
     if (opens !== closes) add({ code: "unbalanced_html", message: `<${tag}> 标签不成对：${opens}/${closes}` });
   }
   const dollars = (markdown.match(/(?<!\\)\$/g) || []).length;
-  if (dollars % 2 !== 0 || (markdown.match(/\$\$/g) || []).length % 2 !== 0) add({ code: "unbalanced_math", message: "公式分隔符不成对" });
+  if (dollars % 2 !== 0 || (markdown.match(/(?<!\\)\$\$/g) || []).length % 2 !== 0) add({ code: "unbalanced_math", message: "公式分隔符不成对" });
   return {
     ok: issues.length === 0,
     issues,
@@ -138,6 +158,12 @@ export function inspectSourceQuality(markdown: string): SourceQualityReport {
  * Completeness gate for the local pdftotext fallback. `inspectSourceQuality`
  * only catches corrupted text; this checks whether the extraction plausibly
  * captured the whole document (text volume per page, embedded images).
+ *
+ * This gate exists for the pdftotext fallback, whose output is plain text plus
+ * separately discovered page renders. Docling does not need the same check:
+ * its document model carries figures/tables as first-class nodes, so a parse
+ * either yields those references in its own structured output or fails the
+ * source-quality gate; there is no separate image-extraction step to audit.
  */
 export function assessTextExtractionCompleteness(
   markdown: string,
@@ -154,8 +180,12 @@ export function assessTextExtractionCompleteness(
   } else if (textChars < (stats.minChars ?? 1000)) {
     issues.push("无法确认页数且文本过短");
   }
-  if ((stats.embeddedImages || 0) > 0 && !/!\[[^\]]*\]\(|<img\b/i.test(markdown)) {
-    issues.push(`PDF 含 ${stats.embeddedImages} 个嵌入图片，但本地提取没有任何图片引用，图片/表格可能已丢失`);
+  const embeddedImages = stats.embeddedImages || 0;
+  const imageRefs = (markdown.match(/!\[[^\]]*\]\([^)]*\)|<img\b/gi) || []).length;
+  if (embeddedImages > 0 && imageRefs === 0) {
+    issues.push(`PDF 含 ${embeddedImages} 个嵌入图片，但本地提取没有任何图片引用，图片/表格可能已丢失`);
+  } else if (embeddedImages > 0 && imageRefs < Math.max(1, Math.ceil(embeddedImages / 2))) {
+    issues.push(`PDF 含 ${embeddedImages} 个嵌入图片，但本地提取仅保留 ${imageRefs} 个引用，疑似部分图片/表格丢失`);
   }
   return { ok: issues.length === 0, issues, textChars };
 }
@@ -165,6 +195,8 @@ type TranslationRuntime = {
   parser?: string;
   formulaEnabled?: string;
   glossary?: string;
+  formatVersion?: string;
+  promptVersion?: string;
 };
 
 export function translationSourceHash(
@@ -172,8 +204,8 @@ export function translationSourceHash(
   runtime: TranslationRuntime = {},
 ) {
   return createHash("sha256").update(JSON.stringify({
-    format: TRANSLATION_FORMAT_VERSION,
-    prompt: TRANSLATION_PROMPT_VERSION,
+    format: runtime.formatVersion || TRANSLATION_FORMAT_VERSION,
+    prompt: runtime.promptVersion || TRANSLATION_PROMPT_VERSION,
     title: paper.title,
     abstract: paper.abstract || "",
     pdfUrl: paper.pdf_url || "",
@@ -809,7 +841,7 @@ function normalizeMathBody(value: string) {
 }
 
 function normalizeMathExpressions(markdown: string) {
-  return markdown.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([^\n]+\\\)|(?<!\$)\$(?!\$)[^$\n]+\$(?!\$)/g, (expression) => {
+  return markdown.replace(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|\\\[[\s\S]*?\\\]|\\\([^\n]+\\\)|(?<!\\)\$(?!\$)[^$\n]+(?<!\\)\$(?!\$)/g, (expression) => {
     if (expression.startsWith("$$")) {
       const body = normalizeMathBody(expression.slice(2, -2));
       return /\n/.test(expression) ? `$$\n${body}\n$$` : `$$${body}$$`;
@@ -831,7 +863,7 @@ function normalizeInlineVariables(markdown: string) {
     protectedTokens.push(value);
     return token;
   };
-  let text = markdown.replace(/<table\b[\s\S]*?<\/table>|<[^>]*>|\$\$[\s\S]*?\$\$|(?<!\$)\$[^$\n]+\$(?!\$)/gi, protect);
+  let text = markdown.replace(/<table\b[\s\S]*?<\/table>|<[^>]*>|(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$(?!\$)[^$\n]+(?<!\\)\$(?!\$)/gi, protect);
   text = text
     .replace(/((?:参数|变量|时间步|组数|迭代次数|维度|第)\s*)([A-Za-z])\b/g, (_match, prefix: string, variable: string) => `${prefix}$${variable}$`)
     .replace(/\b([A-Za-z])\s*=\s*([0-9]+(?:\.[0-9]+)?)\b/g, (_match, variable: string, value: string) => `$${variable} = ${value}$`)
@@ -939,7 +971,7 @@ export function protectStructuredMarkdown(markdown: string) {
     const label = /^(?:Figure|Fig\.?|图)$/i.test(kind) ? "图" : "表";
     return `${prefix || ""}${protect(`${emphasis || ""}${label} ${number}${separator}`, "CAPTION")}`;
   });
-  text = text.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\$[^$\n]+\$|\\\([^\n]+\\\)/g, (value) => protect(value, "MATH"));
+  text = text.replace(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|\\\[[\s\S]*?\\\]|(?<!\\)\$[^$\n]+(?<!\\)\$|\\\([^\n]+\\\)/g, (value) => protect(value, "MATH"));
   return { text, protectedTokens };
 }
 
@@ -1051,7 +1083,7 @@ function markdownImages(markdown: string) {
 }
 
 function mathExpressions(markdown: string) {
-  return [...markdown.matchAll(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([^\n]+\\\)|(?<!\$)\$(?!\$)[^$\n]+\$(?!\$)/g)].map((match) => canonicalMathExpression(match[0]));
+  return [...markdown.matchAll(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|\\\[[\s\S]*?\\\]|\\\([^\n]+\\\)|(?<!\\)\$(?!\$)[^$\n]+(?<!\\)\$(?!\$)/g)].map((match) => canonicalMathExpression(match[0]));
 }
 
 /** Compare formulas independently of harmless whitespace around delimiters. */
@@ -1078,7 +1110,7 @@ function isSimpleInlineVariable(expression: string) {
 function sourceContainsBareVariable(source: string, expression: string) {
   const body = inlineMathBody(expression).replace(/\\[A-Za-z]+/g, "").replace(/[{}_^]/g, "").trim();
   if (!body || body.length > 8) return false;
-  const sourceText = source.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\([^\n]+\\\)|(?<!\$)\$(?!\$)[^$\n]+\$(?!\$)/g, " ");
+  const sourceText = source.replace(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|\\\[[\s\S]*?\\\]|\\\([^\n]+\\\)|(?<!\\)\$(?!\$)[^$\n]+(?<!\\)\$(?!\$)/g, " ");
   const escaped = body.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // The source may already have the same variable inside a protected formula;
   // accept that as evidence when DeepSeek adds the required inline wrapper in
@@ -1107,8 +1139,42 @@ function mathContentEquivalent(source: string, translated: string) {
   }
   // Models often wrap only a subscript fragment ("Li$_{x}$Si") while leaving
   // the base in prose. The rendering is equivalent to $Li_{x}Si$; accept such
-  // fragments when the same subscript occurs inside a source formula.
+  // fragments only when the surrounding prose actually reconstructs the full
+  // source formula (same base letters, same order) -- never just the subscripts.
   const fragmentSubscript = (expression: string) => expression.match(/^\$_(?:\{([^{}]*)\}|([A-Za-z0-9]+))\$$/)?.slice(1).find(Boolean);
+  const fragmentReconstructsSourceFormula = (formula: string, subscripts: string[]) => {
+    const skeleton = formula.replace(/_(?:\{[^{}]*\}|[A-Za-z0-9]+)/g, "").replace(/\$|\\[A-Za-z]+|\s|[\d{}_^-]/g, "");
+    if (!/^[A-Za-z]+$/.test(skeleton)) return false;
+    const bySubscript = new Map<string, string[]>();
+    for (const fragment of acceptedFragments) {
+      const subscript = fragmentSubscript(fragment);
+      if (!subscript) continue;
+      const candidates = bySubscript.get(subscript) || [];
+      candidates.push(fragment);
+      bySubscript.set(subscript, candidates);
+    }
+    const trailingLetters = (text: string) => text.match(/[A-Za-z]{1,12}$/)?.[0] || "";
+    let searchFrom = 0;
+    let reconstructed = "";
+    for (let index = 0; index < subscripts.length; index += 1) {
+      const candidates = bySubscript.get(subscripts[index]) || [];
+      let foundAt = -1;
+      let foundFragment = "";
+      for (const candidate of candidates) {
+        const at = translated.indexOf(candidate, searchFrom);
+        if (at >= 0 && (foundAt < 0 || at < foundAt)) {
+          foundAt = at;
+          foundFragment = candidate;
+        }
+      }
+      if (foundAt < 0) return false;
+      reconstructed += trailingLetters(index === 0 ? translated.slice(0, foundAt) : translated.slice(searchFrom, foundAt));
+      searchFrom = foundAt + foundFragment.length;
+    }
+    const tail = translated.slice(searchFrom, searchFrom + 12);
+    if (/^[A-Za-z]/.test(tail)) reconstructed += tail.match(/^[A-Za-z]+/)?.[0] || "";
+    return reconstructed === skeleton;
+  };
   const acceptedFragments: string[] = [];
   for (let index = extras.length - 1; index >= 0; index -= 1) {
     const subscript = fragmentSubscript(extras[index]);
@@ -1118,14 +1184,13 @@ function mathContentEquivalent(source: string, translated: string) {
     }
   }
   // A source formula that was split into fragments ("Li$_{x}$Si$_{1-x}$") is
-  // covered when every subscript appears as an accepted fragment and the
-  // formula's remaining skeleton is only letters/digits (no operators).
+  // covered only when every subscript appears as an accepted fragment and the
+  // prose surrounding those fragments reconstructs the exact base/order.
   const coveredSubscripts = new Set(acceptedFragments.map((expression) => fragmentSubscript(expression)).filter(Boolean));
   for (let index = remaining.length - 1; index >= 0; index -= 1) {
     const formula = remaining[index];
     const subscripts = [...formula.matchAll(/_(?:\{([^{}]*)\}|([A-Za-z0-9]+))/g)].map((match) => match[1] || match[2]).filter(Boolean);
-    const skeleton = formula.replace(/\$|\\[A-Za-z]+|\s|[\d{}_^-]/g, "");
-    if (subscripts.length && subscripts.every((subscript) => coveredSubscripts.has(subscript)) && /^[A-Za-z]+$/.test(skeleton)) {
+    if (subscripts.length && subscripts.every((subscript) => coveredSubscripts.has(subscript)) && fragmentReconstructsSourceFormula(formula, subscripts)) {
       remaining.splice(index, 1);
     }
   }
@@ -1133,7 +1198,7 @@ function mathContentEquivalent(source: string, translated: string) {
 }
 
 function blockMathExpressions(markdown: string) {
-  return [...markdown.matchAll(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]/g)].map((match) => canonicalMathExpression(match[0]));
+  return [...markdown.matchAll(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|\\\[[\s\S]*?\\\]/g)].map((match) => canonicalMathExpression(match[0]));
 }
 
 /** Validate a cached fragment before reuse so old pipeline bugs cannot survive a new run. */
@@ -1238,7 +1303,7 @@ export function validateTranslatedMarkdown(source: string, translated: string, e
   const mathComparison = mathContentEquivalent(source, translated);
   if (mathComparison.missing.length || mathComparison.extras.length) issues.push(`公式内容或数量不一致：原文 ${sourceMath.length}，译文 ${translatedMath.length}`);
   if (JSON.stringify(sourceBlockMath) !== JSON.stringify(translatedBlockMath)) issues.push(`块级公式内容或顺序不一致：原文 ${sourceBlockMath.length}，译文 ${translatedBlockMath.length}`);
-  const mathBlocks = translated.match(/\$\$[\s\S]*?\$\$/g) || [];
+  const mathBlocks = translated.match(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$/g) || [];
   if (mathBlocks.some((block) => /<[^>]*img\b/i.test(block))) issues.push("图片被错误包裹在公式块中");
   if (mathBlocks.some((block) => /<table\b/i.test(block))) issues.push("表格被错误包裹在公式块中");
   if ((translated.match(/```/g) || []).length % 2 !== 0) issues.push("代码围栏不成对");
@@ -1260,7 +1325,7 @@ export function validateTranslatedMarkdown(source: string, translated: string, e
       issues.push(`HTML 表格 ${index + 1} 仍存在未归入表头的首行`);
     }
   });
-  const textOutsideMath = translated.replace(/\$\$[\s\S]*?\$\$|\$[^$\n]+\$/g, "");
+  const textOutsideMath = translated.replace(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|(?<!\\)\$[^$\n]+(?<!\\)\$/g, "");
   if (/\\(?:frac|begin|end|text|mathbb|mathbf|mathcal|tag)\b/.test(textOutsideMath)) issues.push("检测到可能未包裹的 LaTeX 公式");
   return [...new Set(issues)];
 }
@@ -1430,7 +1495,7 @@ export function normalizeTranslatedMarkdown(markdown: string) {
   const output: string[] = [];
   let inFence = false;
   let inMathBlock = false;
-  const rawMathFenceCount = (markdown.match(/\$\$\s*\n\s*\$\$/g) || []).length;
+  const rawMathFenceCount = (markdown.match(/(?<!\\)\$\$\s*\n\s*(?<!\\)\$\$/g) || []).length;
   const repaired = repairMalformedMathFences(removeDuplicateMathFences(markdown));
   const legacySafe = rawMathFenceCount > 3 ? canonicalizeLegacyMath(repaired) : repaired;
   const normalizedInput = expandSingleLineMath(normalizeInlineVariables(removeParserPageSeparators(normalizeMathExpressions(normalizeLatexDelimiters(legacySafe).replace(/<!--\s*formula-not-decoded\s*-->/gi, "[公式需回看原文 PDF]")))));
@@ -1555,7 +1620,7 @@ export function findUnknownProtectedTokens(content: string, knownTokens: string[
  * so the document can be validated and published.
  */
 export function unwrapReferenceMathBlocks(markdown: string) {
-  return markdown.replace(/\$\$([\s\S]*?)\$\$/g, (block, body: string) =>
+  return markdown.replace(/(?<!\\)\$\$([\s\S]*?)(?<!\\)\$\$/g, (block, body: string) =>
     /https?:|doi\.org|arXiv|vol\.\s*\d|pp\.\s*\d|et al\.|\[\d+\]\s+[A-Z"“]|Journal|Proceedings|Conference|Magazine/i.test(body)
       ? body.trim()
       : block,

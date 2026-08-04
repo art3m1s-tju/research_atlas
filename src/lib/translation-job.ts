@@ -56,11 +56,22 @@ export function claimTranslationJob(
   return { claimed: result.changes > 0, jobToken: result.changes > 0 ? jobToken : null };
 }
 
-/** Where clause shared by every worker-owned update: empty token means an unmanaged manual run. */
+/**
+ * Where clause shared by every worker-owned update. A non-empty token can only
+ * touch its own managed row; an empty token can only touch unmanaged rows
+ * (job_token NULL/''), so an unmanaged CLI run can never clobber an active
+ * managed job.
+ */
 function tokenGuard(paperId: number, jobToken: string) {
+  if (jobToken) {
+    return {
+      sql: "paper_id = ? AND job_token = ?",
+      args: [paperId, jobToken],
+    };
+  }
   return {
-    sql: "paper_id = ? AND (? = '' OR job_token = ?)",
-    args: [paperId, jobToken, jobToken],
+    sql: "paper_id = ? AND (job_token IS NULL OR job_token = '')",
+    args: [paperId],
   };
 }
 
@@ -89,6 +100,32 @@ export function updateTranslationProgress(
   const guard = tokenGuard(paperId, jobToken);
   return db.prepare(`UPDATE paper_translations SET status = 'running', progress_phase = ?, progress_message = ?, progress_current = ?, progress_total = ?, lease_expires_at = datetime('now', ?), updated_at = CURRENT_TIMESTAMP WHERE ${guard.sql}`)
     .run(phase, message, current, total, `+${leaseMinutes} minutes`, ...guard.args);
+}
+
+/** Guarded metadata write that replaces the old token-less "source fields" UPDATE. */
+export function updateTranslationJobMetadata(
+  db: Database.Database,
+  paperId: number,
+  jobToken: string,
+  leaseMinutes: number,
+  fields: { sourceHash: string; sourceUrl: string; outputDir: string; sourceChars: number; progressMessage: string; progressTotal: number },
+) {
+  const guard = tokenGuard(paperId, jobToken);
+  return db.prepare(`UPDATE paper_translations SET status = 'running', source_hash = ?, source_url = ?, output_dir = ?, source_chars = ?, translated_chars = 0, error = NULL, progress_phase = 'translating', progress_message = ?, progress_current = 0, progress_total = ?, lease_expires_at = datetime('now', ?), updated_at = CURRENT_TIMESTAMP WHERE ${guard.sql}`)
+    .run(fields.sourceHash, fields.sourceUrl, fields.outputDir, fields.sourceChars, fields.progressMessage, fields.progressTotal, `+${leaseMinutes} minutes`, ...guard.args);
+}
+
+/**
+ * Fencing checkpoint before touching shared artifacts. If the lease refresh
+ * cannot touch the row (changes !== 1), the worker lost ownership (a new job
+ * replaced it) and must stop immediately instead of writing stale files.
+ */
+export function assertTranslationOwnership(db: Database.Database, paperId: number, jobToken: string, leaseMinutes: number) {
+  const result = refreshTranslationLease(db, paperId, jobToken, leaseMinutes);
+  if (result.changes !== 1) {
+    throw new Error("翻译任务所有权校验失败：job token 已失效，停止写入共享产物");
+  }
+  return result;
 }
 
 export function finishTranslationJob(

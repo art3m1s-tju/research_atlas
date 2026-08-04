@@ -157,6 +157,28 @@ test("fetchWithRetry aborts the backoff sleep when the caller aborts", async () 
   }
 });
 
+test("fetchWithRetry aborts the backoff sleep when only init.signal is provided", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const restore = mockFetch(async () => {
+    calls += 1;
+    if (calls === 1) {
+      setTimeout(() => controller.abort(), 20);
+      return new Response("busy", { status: 503 });
+    }
+    return new Response("ok", { status: 200 });
+  });
+  try {
+    await assert.rejects(
+      fetchWithRetry("https://example.com/landing", { signal: controller.signal }, { attempts: 3, baseDelayMs: 10000 }),
+      (error: unknown) => error instanceof Error && error.name === "AbortError",
+    );
+    assert.equal(calls, 1);
+  } finally {
+    restore();
+  }
+});
+
 test("fetchWithRetry reuses X-Idempotency-Key across POST retries", async () => {
   let calls = 0;
   const seenKeys: string[] = [];
