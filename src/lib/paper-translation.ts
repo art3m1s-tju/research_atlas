@@ -1060,6 +1060,7 @@ function blockMathExpressions(markdown: string) {
 /** Validate a cached fragment before reuse so old pipeline bugs cannot survive a new run. */
 export function validateTranslatedFragment(source: string, translated: string) {
   const issues: string[] = [];
+  if (/\[\[ATLAS_[A-Z]+_\d{6}\]\]/.test(translated)) issues.push("存在未恢复的结构化占位符");
   const mathComparison = mathContentEquivalent(source, translated);
   if (mathComparison.missing.length || mathComparison.extras.length) issues.push("公式内容或数量不一致");
   if (JSON.stringify(blockMathExpressions(source)) !== JSON.stringify(blockMathExpressions(translated))) issues.push("块级公式内容或顺序不一致");

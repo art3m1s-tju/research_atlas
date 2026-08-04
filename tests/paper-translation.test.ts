@@ -453,6 +453,7 @@ test("fragment validation rejects stale caches with invented formulas or missing
   assert.deepEqual(validateTranslatedFragment(source, "文本 $x$。\n\n![Image](assets/figure.png)"), []);
   assert.ok(validateTranslatedFragment(source, "文本 $x$ 和 $y$。\n\n![Image](assets/figure.png)").includes("公式内容或数量不一致"));
   assert.ok(validateTranslatedFragment(source, "文本 $x$。\n").includes("图片引用不一致"));
+  assert.ok(validateTranslatedFragment(source, "文本 $x$。\n\n[[ATLAS_BIND_000004]][[ATLAS_TABLE_000006]]").includes("存在未恢复的结构化占位符"));
 });
 
 test("fragment validation permits required inline wrappers for bare variables", () => {
