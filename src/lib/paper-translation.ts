@@ -1053,9 +1053,14 @@ function sourceContainsBareVariable(source: string, expression: string) {
   // nearby prose. Complex or multi-character invented formulas remain strict.
   const compactSource = sourceText.replace(/\s+/g, "");
   const compactBody = body.replace(/\s+/g, "");
+  // Multi-character bodies such as d_{out} only ever appear inside protected
+  // source formulas; accept a wrapper when the same variable body (minus math
+  // decorations) occurs in any source math expression.
+  const sourceMathText = mathExpressions(source).join(" ").replace(/[{}_^\\]/g, "");
   return new RegExp(`(?<![A-Za-z])${escaped}(?![A-Za-z])`).test(sourceText)
     || new RegExp(`(?<![A-Za-z])${escaped}(?![A-Za-z])`).test(source)
-    || compactSource.includes(compactBody);
+    || compactSource.includes(compactBody)
+    || (body.length >= 2 && sourceMathText.includes(body));
 }
 
 /** Compare formulas while allowing the mandated $b$/$T$ wrappers around bare variables. */

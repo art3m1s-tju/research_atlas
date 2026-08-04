@@ -503,6 +503,12 @@ test("fragment validation permits required inline wrappers for bare variables", 
   assert.ok(validateTranslatedFragment("At time t, parameter b changes.", "在时间 $t$，新增 $y = 1$。").some((issue) => issue.includes("公式内容")));
 });
 
+test("fragment validation accepts subscripted variable wrappers that occur in source math", () => {
+  const source = "路径损耗：$L_{LOS}(dB)=20log(4\\pi f_c d / c)+\\zeta_{LOS}$";
+  const translated = "路径损耗：$L_{LOS}(dB)=20log(4\\pi f_c d / c)+\\zeta_{LOS}$，其中 $L_{LOS}$ 表示视距损耗。";
+  assert.deepEqual(validateTranslatedFragment(source, translated), []);
+});
+
 test("strict validation catches the observed title, section, table, and continuation failures", () => {
   const source = "## Introduction\n\n## Results\n\n| A | B |\n|---|---|\n| 1 | 2 |";
   const translated = "## 引言\n\n（上接前文）\n\n| A | B |\n|---|---|\n| 1 | 2 | 3 |";
