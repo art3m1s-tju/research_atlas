@@ -11,6 +11,7 @@ import {
   inspectSourceQuality,
   repairSourceQuality,
   normalizeTranslatedMarkdown,
+  normalizeExtraNumberedHeadings,
   normalizeTranslatedStructureLabels,
   numberReferenceSection,
   pdfLinksFromLandingHtml,
@@ -169,6 +170,17 @@ test("restoreHeadingLayout enforces source heading depths", () => {
   const source = "## Methodology\n\n### Overview\n\n#### Detail";
   const translated = "## 方法\n\n## 概述\n\n### 细节";
   assert.equal(restoreHeadingLayout(source, translated), "## 方法\n\n### 概述\n\n#### 细节");
+});
+
+test("extra numbered headings are demoted to bold when the source numbering pattern exists", () => {
+  const source = "## 4. The environment is part of the cognitive system.\n\nText\n\n5. Cognition Is for Action\n\n6. Off-Line Cognition Is Body Based";
+  const translated = "## 4. 环境是认知系统的一部分。\n\n## 5. 认知是为行动服务的。\n\n## 6. 离线认知是基于身体的。";
+  assert.equal(
+    normalizeExtraNumberedHeadings(source, translated),
+    "## 4. 环境是认知系统的一部分。\n\n**5. 认知是为行动服务的。**\n\n**6. 离线认知是基于身体的。**",
+  );
+  assert.equal(normalizeExtraNumberedHeadings(source, "## 4. 环境是认知系统的一部分。"), "## 4. 环境是认知系统的一部分。");
+  assert.equal(normalizeExtraNumberedHeadings("## Methodology", "## 方法\n\n## 5. 额外"), "## 方法\n\n## 5. 额外");
 });
 
 test("pdfLinksFromLandingHtml resolves OJS citation metadata and download links", () => {

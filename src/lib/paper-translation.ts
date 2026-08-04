@@ -994,6 +994,23 @@ export function restoreHeadingLayout(source: string, translated: string) {
   return translated.replace(/^(#{1,6})\s+(.+)$/gm, (_match, _marks: string, text: string) => `${"#".repeat(sourceHeadings[index++].depth)} ${text.trim()}`);
 }
 
+/**
+ * Parser output sometimes misses numbered section lead-ins ("5. Cognition Is
+ * for Action") while the model promotes them to headings. When the source has
+ * a "## N." numbering pattern, demote translated "## N." headings that do not
+ * exist in the source back to bold paragraphs, so the translated structure
+ * stays source-faithful.
+ */
+export function normalizeExtraNumberedHeadings(source: string, translated: string) {
+  const sourceNumbered = new Set(
+    [...source.matchAll(/^##\s+(\d+)\.\s+/gm)].map((match) => match[1]),
+  );
+  if (!sourceNumbered.size) return translated;
+  return translated.replace(/^##\s+(\d+)\.\s+(.+)$/gm, (match, number: string, text: string) =>
+    sourceNumbered.has(number) ? match : `**${number}. ${text}**`,
+  );
+}
+
 function markdownImages(markdown: string) {
   return [
     ...[...markdown.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((match) => match[1]),

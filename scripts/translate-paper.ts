@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
 import { failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationProgress } from "../src/lib/translation-job";
 
@@ -934,7 +934,7 @@ async function main() {
   const workerFailure = workerResults.find((result): result is PromiseRejectedResult => result.status === "rejected");
   if (workerFailure) throw workerFailure.reason;
   updateProgress("validating", "翻译完成，正在校验章节、公式、图片和表格", chunks.length, chunks.length);
-  const translatedBodyWithBindings = numberReferenceSection(normalizeTranslatedStructureLabels(normalizeTranslatedMarkdown(restoreHeadingLayout(source, results.join("\n\n").replace(/\n{3,}/g, "\n\n").trim())), true));
+  const translatedBodyWithBindings = numberReferenceSection(normalizeTranslatedStructureLabels(normalizeTranslatedMarkdown(restoreHeadingLayout(source, normalizeExtraNumberedHeadings(source, results.join("\n\n").replace(/\n{3,}/g, "\n\n").trim()))), true));
   const validationMarkdown = `# ${translatedTitle}\n\n${translatedBodyWithBindings}`.trim();
   const validationIssues = validateTranslatedMarkdown(source, validationMarkdown, translatedTitle);
   const finalMarkdown = stripStructuredBindingMarkers(validationMarkdown).replace(/\n{3,}/g, "\n\n").trim();
