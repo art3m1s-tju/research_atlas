@@ -287,6 +287,24 @@ test("source repair leaves ordinary long prose untouched", () => {
   assert.equal(repaired.markdown, source);
 });
 
+test("source repair escapes odd currency dollars without touching math", () => {
+  const currency = "Plant disease losses reach about $33 billion in the U.S. every year [122].";
+  const repaired = repairSourceQuality(currency);
+  assert.ok(repaired.repairs.some((item) => item.code === "currency_dollar_escaped"));
+  assert.equal((repaired.markdown.match(/(?<!\\)\$/g) || []).length, 0);
+  assert.equal(inspectSourceQuality(repaired.markdown).ok, true);
+
+  const mixed = "Sales reach $12 billion in 2021 and $8.5 billion in 2016.";
+  const mixedRepaired = repairSourceQuality(mixed);
+  assert.deepEqual(mixedRepaired.repairs, []);
+  assert.equal(mixedRepaired.markdown, mixed);
+
+  const math = "Given $x$ and $y$, solve for $z$.";
+  const mathRepaired = repairSourceQuality(math);
+  assert.deepEqual(mathRepaired.repairs, []);
+  assert.equal(mathRepaired.markdown, math);
+});
+
 test("text extraction completeness rejects sparse text and lost embedded images", () => {
   const dense = "## Abstract\n\n" + "The quick brown fox jumps over the lazy dog. ".repeat(60);
   assert.equal(assessTextExtractionCompleteness(dense, { pages: 4 }).ok, true);

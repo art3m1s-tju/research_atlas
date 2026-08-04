@@ -16,7 +16,7 @@ export type SourceQualityReport = {
 };
 
 export type SourceRepair = {
-  code: "repeated_text_tail" | "orphan_fragment";
+  code: "repeated_text_tail" | "orphan_fragment" | "currency_dollar_escaped";
   line: number;
   message: string;
 };
@@ -65,6 +65,17 @@ export function repairSourceQuality(markdown: string) {
   lines.forEach((line, index) => {
     const text = line.trim();
     if (!text || /<table\b/i.test(text)) return;
+    // PaddleOCR frequently turns currency amounts ("$12 billion") into an odd
+    // number of $ tokens, which then fails the math-delimiter gate and forces a
+    // full cloud OCR retry. Only repair lines where every $ starts a number, so
+    // real inline/display math is never touched.
+    const dollars = [...text.matchAll(/(?<!\\)\$/g)];
+    if (dollars.length > 0 && dollars.length % 2 === 1 && dollars.every((match) => /^\d/.test(text.slice((match.index || 0) + 1)))) {
+      const repairedLine = text.replace(/(?<!\\)\$(?=\d)/g, "\\$");
+      lines[index] = line.replace(text, repairedLine);
+      repairs.push({ code: "currency_dollar_escaped", line: index + 1, message: `第 ${index + 1} 行已转义 ${dollars.length} 个货币符号 $，避免被误判为未闭合公式` });
+      return;
+    }
     const run = repeatedRun(text);
     const normalizedLength = text.replace(/\s+/g, "").length;
     if (text.length > 600 && run.repairStart >= 24 && normalizedLength - text.slice(0, run.repairStart).replace(/\s+/g, "").length >= 120) {

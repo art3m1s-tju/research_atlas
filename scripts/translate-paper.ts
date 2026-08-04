@@ -552,25 +552,27 @@ async function tryReuseParsedSource(pdfPath: string, outputDirectory: string, so
 async function extractPdf(urls: string[], outputDirectory: string, onProgress: ParserProgress) {
   let lastError = "没有找到可解析的 PDF";
   const cachedPdfPath = path.join(outputDirectory, "source.pdf");
+  let cachedBytes: Buffer | null = null;
   try {
-    const cachedBytes = await fs.readFile(cachedPdfPath);
-    if (cachedBytes.subarray(0, 4).toString() === "%PDF") {
-      const sourceUrl = urls[0] || "本地已校验 PDF 缓存";
-      onProgress("downloading", "正在复用已校验的 PDF 缓存");
-      const reused = await tryReuseParsedSource(cachedPdfPath, outputDirectory, sourceUrl, onProgress);
-      if (reused) return reused;
-      const structured = await parseAndValidateSource(cachedPdfPath, sourceUrl, outputDirectory, onProgress);
-      return { text: structured.markdown, url: sourceUrl, pdfPath: cachedPdfPath, parser: structured.parser, manifest: structured.manifest };
-    }
+    cachedBytes = await fs.readFile(cachedPdfPath);
   } catch {
     // No valid cached PDF: continue through remote candidates.
+  }
+  if (cachedBytes && cachedBytes.subarray(0, 4).toString() === "%PDF") {
+    const sourceUrl = urls[0] || "本地已校验 PDF 缓存";
+    onProgress("downloading", "正在复用已校验的 PDF 缓存");
+    const reused = await tryReuseParsedSource(cachedPdfPath, outputDirectory, sourceUrl, onProgress);
+    if (reused) return reused;
+    const structured = await parseAndValidateSource(cachedPdfPath, sourceUrl, outputDirectory, onProgress);
+    return { text: structured.markdown, url: sourceUrl, pdfPath: cachedPdfPath, parser: structured.parser, manifest: structured.manifest };
   }
   const candidates = [...new Set(urls.filter(Boolean))];
   for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
     const url = candidates[candidateIndex];
+    let response: Response;
     try {
       onProgress("downloading", `正在下载 PDF（来源 ${candidateIndex + 1}/${candidates.length}）`);
-      const response = await fetchWithRetry(url, {
+      response = await fetchWithRetry(url, {
         headers: { Accept: "application/pdf", "User-Agent": "AI-Research-Atlas/0.1" },
       }, {
         attempts: 4,
@@ -579,26 +581,35 @@ async function extractPdf(urls: string[], outputDirectory: string, onProgress: P
           console.warn(`  PDF 下载第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
         },
       });
-      if (!response.ok) { lastError = `PDF 请求失败：HTTP ${response.status}`; continue; }
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (!bytes.subarray(0, 4).toString().startsWith("%PDF")) {
-        const discovered = pdfLinksFromLandingHtml(bytes.toString("utf8"), response.url || url);
-        for (const pdfUrl of discovered) if (!candidates.includes(pdfUrl)) candidates.push(pdfUrl);
-        lastError = discovered.length
-          ? `数据源是论文落地页，已发现 ${discovered.length} 个 PDF 下载地址`
-          : `数据源不是 PDF：${url}（可能是 DOI 跳转页）`;
-        continue;
-      }
-      const pdfPath = path.join(outputDirectory, "source.pdf");
-      await fs.writeFile(pdfPath, bytes);
-      const reused = await tryReuseParsedSource(pdfPath, outputDirectory, url, onProgress);
-      if (reused) return reused;
-      onProgress("parsing", "正在解析版面、公式、图片和表格；长论文可能需要几分钟");
-      const structured = await parseAndValidateSource(pdfPath, url, outputDirectory, onProgress);
-      return { text: structured.markdown, url, pdfPath, parser: structured.parser, manifest: structured.manifest };
     } catch (error) {
       lastError = `来源 ${url} 失败：${networkErrorDetail(error)}`;
+      continue;
     }
+    if (!response.ok) { lastError = `来源 ${url} 请求失败：HTTP ${response.status}`; continue; }
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      lastError = `来源 ${url} 读取响应失败：${networkErrorDetail(error)}`;
+      continue;
+    }
+    if (!bytes.subarray(0, 4).toString().startsWith("%PDF")) {
+      const discovered = pdfLinksFromLandingHtml(bytes.toString("utf8"), response.url || url);
+      for (const pdfUrl of discovered) if (!candidates.includes(pdfUrl)) candidates.push(pdfUrl);
+      lastError = discovered.length
+        ? `来源 ${url} 是论文落地页，已发现 ${discovered.length} 个 PDF 下载地址`
+        : `来源 ${url} 不是 PDF（可能是 DOI 跳转页）`;
+      continue;
+    }
+    const pdfPath = path.join(outputDirectory, "source.pdf");
+    await fs.writeFile(pdfPath, bytes);
+    const reused = await tryReuseParsedSource(pdfPath, outputDirectory, url, onProgress);
+    if (reused) return reused;
+    onProgress("parsing", "正在解析版面、公式、图片和表格；长论文可能需要几分钟");
+    // Parse errors intentionally propagate with their real phase/error message;
+    // they must not be rewritten as a "PDF 获取失败" download error.
+    const structured = await parseAndValidateSource(pdfPath, url, outputDirectory, onProgress);
+    return { text: structured.markdown, url, pdfPath, parser: structured.parser, manifest: structured.manifest };
   }
   throw new Error(`PDF 获取失败：已对 ${candidates.length} 个来源自动重试仍无法下载（${lastError}）`);
 }
