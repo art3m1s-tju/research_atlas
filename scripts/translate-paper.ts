@@ -331,9 +331,14 @@ async function pdfExtractionStats(pdfPath: string) {
     execFileAsync("pdfinfo", [pdfPath], { timeout: 30000, maxBuffer: 4 * 1024 * 1024 }).catch(() => null),
     execFileAsync("pdfimages", ["-list", pdfPath], { timeout: 60000, maxBuffer: 8 * 1024 * 1024 }).catch(() => null),
   ]);
+  const pagesAvailable = info !== null;
+  const imagesAvailable = images !== null;
   const pages = Number(/^Pages:\s+(\d+)/m.exec(info?.stdout || "")?.[1] || 0);
   const embeddedImages = (images?.stdout || "").split("\n").filter((line) => /^\s*\d+\s+\d+\s/.test(line)).length;
-  return { pages, embeddedImages };
+  const missingTools: string[] = [];
+  if (!pagesAvailable) missingTools.push("pdfinfo");
+  if (!imagesAvailable) missingTools.push("pdfimages");
+  return { pages, embeddedImages, pagesAvailable, imagesAvailable, missingTools };
 }
 
 async function runPdftotextParser(pdfPath: string, outputDirectory: string, onProgress: ParserProgress) {
@@ -374,10 +379,12 @@ async function parseStructuredPdf(pdfPath: string, sourceUrl: string, outputDire
   }
   if (parserMode !== "auto") throw new Error(`不支持 TRANSLATION_PARSER=${parserMode}（可用 auto/docling/paddleocr-only）`);
   let local: { markdown: string; parser: string; manifest: Record<string, unknown> } | null = null;
+  const localGateIssues: string[] = [];
   try {
     const docling = await runDoclingParser(pdfPath, outputDirectory, onProgress);
     if (inspectSourceQuality(docling.markdown).ok && docling.completeness.ok) return docling;
     const issues = [...docling.completeness.issues, ...inspectSourceQuality(docling.markdown).issues.map((issue) => issue.message)];
+    localGateIssues.push(...issues);
     console.warn(`  Docling 解析结果未通过完整性门禁：${issues.slice(0, 4).join("；")}，回退到 PaddleOCR`);
   } catch (error) {
     console.warn(`  Docling 本地解析不可用：${networkErrorDetail(error)}`);
@@ -387,6 +394,7 @@ async function parseStructuredPdf(pdfPath: string, sourceUrl: string, outputDire
         local = fallback;
       } else {
         const issues = [...fallback.completeness.issues, ...inspectSourceQuality(fallback.markdown).issues.map((issue) => issue.message)];
+        localGateIssues.push(...issues);
         console.warn(`  pdftotext 回退未通过完整性门禁：${issues.slice(0, 4).join("；")}`);
       }
     } catch (fallbackError) {
@@ -394,7 +402,9 @@ async function parseStructuredPdf(pdfPath: string, sourceUrl: string, outputDire
     }
   }
   if (local) return local;
-  if (!process.env.PADDLEOCR_ACCESS_TOKEN) throw new Error("PADDLEOCR_ACCESS_TOKEN 未配置，且本地解析未通过质量门禁");
+  if (!process.env.PADDLEOCR_ACCESS_TOKEN) {
+    throw new Error(`PADDLEOCR_ACCESS_TOKEN 未配置，且本地解析未通过完整性门禁：${localGateIssues.slice(0, 6).join("；") || "见上方日志"}`);
+  }
   return parseWithPaddleOcr(pdfPath, sourceUrl, outputDirectory, onProgress);
 }
 

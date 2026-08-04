@@ -58,14 +58,25 @@ function looksLikeInlineMathBody(body: string): boolean {
   if (!trimmed) return false;
   if (/\\[A-Za-z]+/.test(trimmed)) return true;
   if (/[+\-*/=<>&|^_~%]/.test(trimmed)) return true;
-  // Function calls (log(x), max(x, y)) and single-variable grouping ((x)).
-  // Natural-language parentheses such as "(in 2021)" do not match either.
-  if (/\b[A-Za-z]+\s*\([^)]*\)/.test(trimmed)) return true;
+  // Function calls require the identifier to touch "(": log(x), max(x, y).
+  // "million (USD)" or "(in 2021)" are natural-language parentheticals, not
+  // math, because there is whitespace before the parenthesis.
+  if (/\b[A-Za-z]+\([^)]*\)/.test(trimmed)) return true;
   if (/\(\s*[A-Za-z]\s*\)/.test(trimmed)) return true;
   // Variable-like spans with space-separated single-letter tokens ("2 x",
   // "2 x y"); multi-letter words such as "billion" cannot match because each
   // token is exactly one letter and must be separated by whitespace.
   return /^\d+(?:\.\d+)?(?:\s+[A-Za-z])+$/.test(trimmed);
+}
+
+/**
+ * True when the text after a $ starts like a currency amount: a number
+ * followed by an optional space-separated word ("20 million (USD) to ",
+ * "8.5 billion in 2016 to ", "5-"). This runs only on dollars that were not
+ * already paired as legal math spans, so "$2x+1$" is never affected.
+ */
+function looksLikeCurrencyAmountSegment(segment: string): boolean {
+  return /^\d+(?:[.,]\d+)*(?:\s+[A-Za-z]{2,})*/.test(segment.trim());
 }
 
 /**
@@ -130,7 +141,7 @@ export function repairSourceQuality(markdown: string) {
       }
       const segment = text.slice(position + 1, nextUnmarked);
       const proseLike = !segment.includes("\\") && /\b[A-Za-z]{2,}\b/.test(segment.replace(/\\[A-Za-z]+/g, " "));
-      if (proseLike) currencyPositions.add(position);
+      if (proseLike || looksLikeCurrencyAmountSegment(segment)) currencyPositions.add(position);
     }
     if (currencyPositions.size > 0) {
       let repairedLine = "";
@@ -203,25 +214,26 @@ export function inspectSourceQuality(markdown: string): SourceQualityReport {
 }
 
 /**
- * Completeness gate for the local pdftotext fallback. `inspectSourceQuality`
- * only catches corrupted text; this checks whether the extraction plausibly
- * captured the whole document (text volume per page, embedded images).
+ * Completeness gate for local text-based parsers (pdftotext fallback and
+ * Docling). `inspectSourceQuality` only catches corrupted text; this checks
+ * whether the extraction plausibly captured the whole document (text volume
+ * per page, embedded images).
  *
- * This gate exists for the pdftotext fallback, whose output is plain text plus
- * separately discovered page renders. Docling does not need the same check:
- * its document model carries figures/tables as first-class nodes, so a parse
- * either yields those references in its own structured output or fails the
- * source-quality gate; there is no separate image-extraction step to audit.
+ * The gate fails closed: when the caller explicitly reports that pdfinfo or
+ * pdfimages could not run, missing statistics are an issue rather than a
+ * silent pass, so a local parse is never labelled complete without evidence.
  */
 export function assessTextExtractionCompleteness(
   markdown: string,
-  stats: { pages?: number; embeddedImages?: number; minCharsPerPage?: number; minChars?: number },
+  stats: { pages?: number; embeddedImages?: number; minCharsPerPage?: number; minChars?: number; pagesAvailable?: boolean; imagesAvailable?: boolean },
 ) {
   const issues: string[] = [];
   const textChars = markdown.replace(/\s+/g, "").length;
   const pages = stats.pages || 0;
   const minCharsPerPage = stats.minCharsPerPage ?? 500;
-  if (pages > 0) {
+  if (stats.pagesAvailable === false) {
+    issues.push("无法获取 PDF 页数（pdfinfo 不可用或失败），本地解析不能判定为完整");
+  } else if (pages > 0) {
     if (textChars < pages * minCharsPerPage) {
       issues.push(`文本覆盖率过低：约 ${Math.round(textChars / pages)} 字/页（${pages} 页），疑似扫描件或内容丢失`);
     }
@@ -230,7 +242,9 @@ export function assessTextExtractionCompleteness(
   }
   const embeddedImages = stats.embeddedImages || 0;
   const imageRefs = (markdown.match(/!\[[^\]]*\]\([^)]*\)|<img\b/gi) || []).length;
-  if (embeddedImages > 0 && imageRefs === 0) {
+  if (stats.imagesAvailable === false) {
+    issues.push("无法获取 PDF 嵌入图片统计（pdfimages 不可用或失败），无法确认图片完整性");
+  } else if (embeddedImages > 0 && imageRefs === 0) {
     issues.push(`PDF 含 ${embeddedImages} 个嵌入图片，但本地提取没有任何图片引用，图片/表格可能已丢失`);
   } else if (embeddedImages > 0 && imageRefs < Math.max(1, Math.ceil(embeddedImages / 2))) {
     issues.push(`PDF 含 ${embeddedImages} 个嵌入图片，但本地提取仅保留 ${imageRefs} 个引用，疑似部分图片/表格丢失`);

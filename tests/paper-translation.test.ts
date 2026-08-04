@@ -384,6 +384,29 @@ test("source repair escapes two amounts but keeps bare-function math spans", () 
   assert.ok(protectedResult.protectedTokens.every((token) => !token.value.includes("million")));
 });
 
+test("source repair escapes parenthesized currency amounts without treating them as function math", () => {
+  const line = "Revenue increased from $20 million (USD) to $30 million (USD).";
+  const repaired = repairSourceQuality(line);
+  assert.ok(repaired.repairs.some((item) => item.code === "currency_dollar_escaped"));
+  assert.equal((repaired.markdown.match(/(?<!\\)\$/g) || []).length, 0);
+  assert.equal(inspectSourceQuality(repaired.markdown).ok, true);
+  const protectedResult = protectStructuredMarkdown(repaired.markdown);
+  assert.equal(protectedResult.protectedTokens.filter((token) => token.token.startsWith("[[ATLAS_MATH_")).length, 0);
+  assert.ok(protectedResult.protectedTokens.every((token) => !token.value.includes("million") && !token.value.includes("USD")));
+});
+
+test("source repair still keeps adjacent-call math next to parenthesized currency", () => {
+  const line = "Revenue was $20 million (USD); the loss is $20 log(x)$ and $2 max(x, y)$.";
+  const repaired = repairSourceQuality(line);
+  assert.ok(repaired.repairs.some((item) => item.code === "currency_dollar_escaped"));
+  assert.equal((repaired.markdown.match(/(?<!\\)\$/g) || []).length, 4);
+  assert.equal(inspectSourceQuality(repaired.markdown).ok, true);
+  const protectedResult = protectStructuredMarkdown(repaired.markdown);
+  assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_MATH_") && token.value === "$20 log(x)$"));
+  assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_MATH_") && token.value === "$2 max(x, y)$"));
+  assert.ok(protectedResult.protectedTokens.every((token) => !token.value.includes("million")));
+});
+
 test("text extraction completeness rejects sparse text and lost embedded images", () => {
   const dense = "## Abstract\n\n" + "The quick brown fox jumps over the lazy dog. ".repeat(60);
   assert.equal(assessTextExtractionCompleteness(dense, { pages: 4 }).ok, true);
@@ -417,6 +440,20 @@ test("docling-like long output with zero image references is rejected when the P
   const report = assessTextExtractionCompleteness(longBalanced, { pages: 12, embeddedImages: 9 });
   assert.equal(report.ok, false);
   assert.ok(report.issues.some((issue) => issue.includes("嵌入图片")));
+});
+
+test("completeness gate fails closed when pdfinfo or pdfimages are unavailable", () => {
+  const longText = "## Abstract\n\n" + "Long balanced text without images. ".repeat(120);
+  const noPages = assessTextExtractionCompleteness(longText, { pages: 0, pagesAvailable: false, embeddedImages: 0 });
+  assert.equal(noPages.ok, false);
+  assert.ok(noPages.issues.some((issue) => issue.includes("pdfinfo")));
+  const noImages = assessTextExtractionCompleteness(longText, { pages: 8, embeddedImages: 0, imagesAvailable: false });
+  assert.equal(noImages.ok, false);
+  assert.ok(noImages.issues.some((issue) => issue.includes("pdfimages")));
+  const bothUnavailable = assessTextExtractionCompleteness(longText, { pages: 0, pagesAvailable: false, embeddedImages: 0, imagesAvailable: false });
+  assert.equal(bothUnavailable.ok, false);
+  assert.ok(bothUnavailable.issues.some((issue) => issue.includes("pdfinfo")));
+  assert.ok(bothUnavailable.issues.some((issue) => issue.includes("pdfimages")));
 });
 
 test("semantic table-image decisions resolve a nearby table caption", () => {
