@@ -94,6 +94,7 @@ export function ensureResearchFeatureSchema(db: Database.Database) {
       started_at TEXT,
       attempts INTEGER NOT NULL DEFAULT 0,
       job_pid INTEGER,
+      job_token TEXT,
       lease_expires_at TEXT,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -107,6 +108,7 @@ export function ensureResearchFeatureSchema(db: Database.Database) {
     started_at: "TEXT",
     attempts: "INTEGER NOT NULL DEFAULT 0",
     job_pid: "INTEGER",
+    job_token: "TEXT",
     lease_expires_at: "TEXT",
   })) {
     if (!translationColumns.has(name)) db.exec(`ALTER TABLE paper_translations ADD COLUMN ${name} ${definition}`);

@@ -154,7 +154,7 @@ npm run summarize:papers
 
 分类接口使用结构化 JSON，要求模型返回主方向、辅助方向、置信度、中文理由、证据术语和可选的新方向建议。它不会根据模型自由发挥的会议、引用量或实验结果做分类。
 
-项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF（瞬时网络错误会自动重试并退避），优先用本地 Docling 解析（未安装时回退 `pdftotext`），只有本地解析不可用或质量不达标时才调用 PaddleOCR-VL-1.6 云端 API。解析过程会按页显示进度，标题层级、阅读顺序、公式、图片和表格交给 DeepSeek 按章节片段翻译。图片资源会保存到 `data/translations/<paper-id>/assets/` 并直接在中文阅读页渲染；已验证的 PDF 和解析结果默认复用（以 PDF SHA-256 校验），成功片段会缓存在 `chunks/` 中以支持断点续译。译文、原文、解析清单和报告分别保存为 `translation_zh.md`、`source.md`、`document.json` 和 `translation_report.md`。章节、公式、图片或表格校验失败时，任务会标记为“需人工复核”，不会报告为已完成。任务带 lease/heartbeat：进程异常退出后，过期任务可以在下次请求时自动重新入队，而不是永久停留在“处理中”。翻译仍需要配置 DeepSeek，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
+项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF（瞬时网络错误会自动重试并退避），优先用本地 Docling 解析（未安装时回退 `pdftotext`，且回退结果必须通过页数/文本覆盖率和图片完整性门禁），只有本地解析不可用或质量不达标时才调用 PaddleOCR-VL-1.6 云端 API。解析过程会按页显示进度，标题层级、阅读顺序、公式、图片和表格交给 DeepSeek 按章节片段翻译。图片资源会保存到 `data/translations/<paper-id>/assets/` 并直接在中文阅读页渲染；已验证的 PDF 和解析结果默认复用（以 PDF SHA-256 校验，无校验签名的旧缓存视为一次缓存失效），成功片段会缓存在 `chunks/` 中以支持断点续译。译文、原文、解析清单和报告分别保存为 `translation_zh.md`、`source.md`、`document.json` 和 `translation_report.md`。章节、公式、图片或表格校验失败时，任务会标记为“需人工复核”，不会报告为已完成。任务带 lease/heartbeat 和 job token 所有权隔离：进程异常退出后，轮询会检测过期租约并把任务标记为失败，下次点击即可重新入队；旧 worker 无法覆盖新任务的状态。翻译仍需要配置 DeepSeek，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
 
 ### 配置云端 PDF 解析器
 

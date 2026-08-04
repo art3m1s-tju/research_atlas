@@ -1,13 +1,14 @@
 import Database from "better-sqlite3";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
+import { failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationProgress } from "../src/lib/translation-job";
 
 const PADDLEOCR_DEFAULT_BASE_URL = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs";
 const PADDLEOCR_DEFAULT_MODEL = "PaddleOCR-VL-1.6";
@@ -44,12 +45,13 @@ function networkErrorDetail(error: unknown) {
   return [...new Set(details)].join("；");
 }
 
-async function paddleOcrFetch(url: string, init: RequestInit, action: string, attempts = 3) {
+async function paddleOcrFetch(url: string, init: RequestInit, action: string, attempts = 3, idempotencyKey?: string) {
   return fetchWithRetry(url, init, {
     attempts,
     timeoutMs: 60000,
     retryPost: String(init.method || "GET").toUpperCase() === "POST",
     retryStatusOnPost: false,
+    idempotencyKey,
     onRetry: ({ attempt, error, status, delayMs }) => {
       console.warn(`  PaddleOCR ${action}第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
     },
@@ -88,11 +90,12 @@ async function reviewVisualAssetWithPaddleOcr(id: string, assetPath: string, out
   const parserModel = process.env.PADDLEOCR_MODEL || PADDLEOCR_DEFAULT_MODEL;
   const bytes = await fs.readFile(path.join(outputDirectory, assetPath));
   const mime = /\.png$/i.test(assetPath) ? "image/png" : /\.webp$/i.test(assetPath) ? "image/webp" : "image/jpeg";
+  const clientJobId = randomUUID();
   const form = new FormData();
   form.append("model", parserModel);
-  form.append("optionalPayload", JSON.stringify({ useDocOrientationClassify: false, useDocUnwarping: false, useChartRecognition: true, prettifyMarkdown: true }));
+  form.append("optionalPayload", JSON.stringify({ useDocOrientationClassify: false, useDocUnwarping: false, useChartRecognition: true, prettifyMarkdown: true, client_job_id: clientJobId }));
   form.append("file", new Blob([new Uint8Array(bytes)], { type: mime }), path.basename(assetPath));
-  const submitted = await paddleOcrFetch(apiUrl, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: form, signal: AbortSignal.timeout(60000) }, "视觉对象提交", 2);
+  const submitted = await paddleOcrFetch(apiUrl, { method: "POST", headers: { Authorization: `Bearer ${token}`, "X-Idempotency-Key": clientJobId }, body: form, signal: AbortSignal.timeout(60000) }, "视觉对象提交", 2, clientJobId);
   const job = await paddleOcrResponse(submitted, "视觉对象提交");
   if (!job?.jobId) throw new Error("PaddleOCR 视觉对象任务没有返回 jobId");
   const deadline = Date.now() + Math.max(60000, Number(process.env.PADDLEOCR_VISUAL_TIMEOUT_MS || 120000));
@@ -147,6 +150,7 @@ async function reviewVisualAssetWithQwen(id: string, assetPath: string, outputDi
     timeoutMs: 30000,
     retryPost: true,
     retryStatusOnPost: true,
+    idempotencyKey: randomUUID(),
     onRetry: ({ attempt, error, status, delayMs }) => {
       console.warn(`  Qwen3-VL 视觉审校第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
     },
@@ -212,11 +216,13 @@ async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDire
   if (!token) throw new Error("PADDLEOCR_ACCESS_TOKEN 未配置");
   const apiUrl = process.env.PADDLEOCR_API_BASE_URL || PADDLEOCR_DEFAULT_BASE_URL;
   const parserModel = process.env.PADDLEOCR_MODEL || PADDLEOCR_DEFAULT_MODEL;
+  const clientJobId = randomUUID();
   const options = {
     useDocOrientationClassify: false,
     useDocUnwarping: false,
     useChartRecognition: true,
     prettifyMarkdown: true,
+    client_job_id: clientJobId,
   };
   const form = new FormData();
   form.append("model", parserModel);
@@ -225,10 +231,10 @@ async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDire
   onProgress("parsing", `正在上传 PDF 至 ${parserModel}`);
   const submitted = await paddleOcrFetch(apiUrl, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, "X-Idempotency-Key": clientJobId },
     body: form,
     signal: AbortSignal.timeout(60000),
-  }, "任务提交", 2);
+  }, "任务提交", 2, clientJobId);
   const job = await paddleOcrResponse(submitted, "任务提交");
   if (!job?.jobId) throw new Error("PaddleOCR 没有返回 jobId");
 
@@ -312,42 +318,67 @@ function pdftotextHeading(line: string) {
   return null;
 }
 
+async function pdfExtractionStats(pdfPath: string) {
+  const [info, images] = await Promise.all([
+    execFileAsync("pdfinfo", [pdfPath], { timeout: 30000, maxBuffer: 4 * 1024 * 1024 }).catch(() => null),
+    execFileAsync("pdfimages", ["-list", pdfPath], { timeout: 60000, maxBuffer: 8 * 1024 * 1024 }).catch(() => null),
+  ]);
+  const pages = Number(/^Pages:\s+(\d+)/m.exec(info?.stdout || "")?.[1] || 0);
+  const embeddedImages = (images?.stdout || "").split("\n").filter((line) => /^\s*\d+\s+\d+\s/.test(line)).length;
+  return { pages, embeddedImages };
+}
+
 async function runPdftotextParser(pdfPath: string, outputDirectory: string, onProgress: ParserProgress) {
   onProgress("parsing", "Docling 不可用，正在尝试 pdftotext 本地文本提取");
   const { stdout } = await execFileAsync("pdftotext", ["-layout", pdfPath, "-"], { timeout: 120000, maxBuffer: 64 * 1024 * 1024 });
   const text = stdout.replace(/\f/g, "\n\n").trim();
   if (!text || text.length < 200) throw new Error("PDF 未包含可提取文本，疑似扫描件");
   const markdown = text.split(/\r?\n/).map((line) => pdftotextHeading(line) || line).join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  const manifest = { parser: "pdftotext", parser_version: "poppler", source_pdf: pdfPath, markdown: "source_structured.md", assets: [] };
+  const stats = await pdfExtractionStats(pdfPath);
+  const completeness = assessTextExtractionCompleteness(markdown, stats);
+  const manifest = {
+    parser: "pdftotext",
+    parser_version: "poppler",
+    source_pdf: pdfPath,
+    markdown: "source_structured.md",
+    assets: [],
+    pages: stats.pages,
+    embedded_images: stats.embeddedImages,
+    text_chars: completeness.textChars,
+  };
   await fs.writeFile(path.join(outputDirectory, "source_structured.md"), `${markdown}\n`, "utf8");
   const hashedManifest = await writePdfHashManifest(pdfPath, outputDirectory, manifest);
-  return { markdown, parser: "pdftotext" as const, manifest: hashedManifest };
-}
-
-async function parseLocalPdf(pdfPath: string, outputDirectory: string, onProgress: ParserProgress) {
-  try {
-    return await runDoclingParser(pdfPath, outputDirectory, onProgress);
-  } catch (doclingError) {
-    console.warn(`  Docling 本地解析不可用：${networkErrorDetail(doclingError)}`);
-    return runPdftotextParser(pdfPath, outputDirectory, onProgress);
-  }
+  return { markdown, parser: "pdftotext" as const, manifest: hashedManifest, completeness };
 }
 
 async function parseStructuredPdf(pdfPath: string, sourceUrl: string, outputDirectory: string, onProgress: ParserProgress) {
   const parserMode = (process.env.TRANSLATION_PARSER || "auto").toLowerCase();
-  if (parserMode === "docling") return parseLocalPdf(pdfPath, outputDirectory, onProgress);
+  if (parserMode === "docling") return runDoclingParser(pdfPath, outputDirectory, onProgress);
   if (parserMode === "paddleocr" || parserMode === "paddleocr-only") {
     if (!process.env.PADDLEOCR_ACCESS_TOKEN) throw new Error("PADDLEOCR_ACCESS_TOKEN 未配置，且当前 TRANSLATION_PARSER 只允许云端解析");
     return parseWithPaddleOcr(pdfPath, sourceUrl, outputDirectory, onProgress);
   }
   if (parserMode !== "auto") throw new Error(`不支持 TRANSLATION_PARSER=${parserMode}（可用 auto/docling/paddleocr-only）`);
+  let local: { markdown: string; parser: string; manifest: Record<string, unknown> } | null = null;
   try {
-    const local = await parseLocalPdf(pdfPath, outputDirectory, onProgress);
-    if (inspectSourceQuality(local.markdown).ok) return local;
-    console.warn("  本地解析结果未通过质量门禁，回退到 PaddleOCR");
+    const docling = await runDoclingParser(pdfPath, outputDirectory, onProgress);
+    if (inspectSourceQuality(docling.markdown).ok) return docling;
+    console.warn("  Docling 解析结果未通过质量门禁，回退到 PaddleOCR");
   } catch (error) {
-    console.warn(`  本地解析失败，回退到 PaddleOCR：${networkErrorDetail(error)}`);
+    console.warn(`  Docling 本地解析不可用：${networkErrorDetail(error)}`);
+    try {
+      const fallback = await runPdftotextParser(pdfPath, outputDirectory, onProgress);
+      if (inspectSourceQuality(fallback.markdown).ok && fallback.completeness.ok) {
+        local = fallback;
+      } else {
+        const issues = [...fallback.completeness.issues, ...inspectSourceQuality(fallback.markdown).issues.map((issue) => issue.message)];
+        console.warn(`  pdftotext 回退未通过完整性门禁：${issues.slice(0, 4).join("；")}`);
+      }
+    } catch (fallbackError) {
+      console.warn(`  pdftotext 回退失败：${networkErrorDetail(fallbackError)}`);
+    }
   }
+  if (local) return local;
   if (!process.env.PADDLEOCR_ACCESS_TOKEN) throw new Error("PADDLEOCR_ACCESS_TOKEN 未配置，且本地解析未通过质量门禁");
   return parseWithPaddleOcr(pdfPath, sourceUrl, outputDirectory, onProgress);
 }
@@ -506,7 +537,9 @@ async function tryReuseParsedSource(pdfPath: string, outputDirectory: string, so
     const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
     if (!manifest?.parser || !markdown.trim()) return null;
     const currentHash = createHash("sha256").update(await fs.readFile(pdfPath)).digest("hex");
-    if (manifest.pdf_sha256 && manifest.pdf_sha256 !== currentHash) return null;
+    // A missing hash means the cached parse predates provenance tracking; do
+    // not "补签名" by trusting it. Treat it as a one-time cache miss.
+    if (!manifest.pdf_sha256 || manifest.pdf_sha256 !== currentHash) return null;
     const reusable = await repairReusableSource(markdown, outputDirectory, { ...manifest, pdf_sha256: currentHash });
     if (!inspectSourceQuality(reusable.markdown).ok) return null;
     onProgress("parsing", `正在复用已有的 ${String(manifest.parser)} 结构化解析结果`);
@@ -588,6 +621,7 @@ async function translateChunk(chunk: string, index: number | string, total: numb
     timeoutMs: 120000,
     retryPost: true,
     retryStatusOnPost: true,
+    idempotencyKey: randomUUID(),
     onRetry: ({ attempt, error, status, delayMs }) => {
       console.warn(`  DeepSeek 第 ${index}/${total} 分块第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
     },
@@ -618,6 +652,7 @@ async function translatePaperTitle(title: string) {
     timeoutMs: 60000,
     retryPost: true,
     retryStatusOnPost: true,
+    idempotencyKey: randomUUID(),
     onRetry: ({ attempt, error, status, delayMs }) => {
       console.warn(`  DeepSeek 标题翻译第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
     },
@@ -712,6 +747,7 @@ async function reviewStructuredBindings(manifest: ReturnType<typeof buildStructu
       timeoutMs: 30000,
       retryPost: true,
       retryStatusOnPost: true,
+      idempotencyKey: randomUUID(),
       onRetry: ({ attempt, error, status, delayMs }) => {
         console.warn(`  DeepSeek 语义审校第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
       },
@@ -763,12 +799,19 @@ async function main() {
   const paper = db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE id = ?").get(paperId) as any;
   if (!paper) throw new Error("论文不存在");
   if (!process.env.DEEPSEEK_API_KEY) throw new Error("DEEPSEEK_API_KEY 未配置");
-  db.prepare("UPDATE paper_translations SET status = 'running', job_pid = ?, lease_expires_at = datetime('now', ?), started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
-    .run(process.pid, `+${leaseMinutes} minutes`, paperId);
+  const jobToken = process.env.TRANSLATION_JOB_TOKEN || "";
+  startTranslationJob(db, paperId, jobToken, process.pid, leaseMinutes);
   const updateProgress = (phase: string, message: string, current = 0, total = 0) => {
-    db.prepare("UPDATE paper_translations SET status = 'running', progress_phase = ?, progress_message = ?, progress_current = ?, progress_total = ?, lease_expires_at = datetime('now', ?), updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
-      .run(phase, message, current, total, `+${leaseMinutes} minutes`, paperId);
+    updateTranslationProgress(db, paperId, jobToken, leaseMinutes, phase, message, current, total);
   };
+  const heartbeat = setInterval(() => {
+    try {
+      refreshTranslationLease(db, paperId, jobToken, leaseMinutes);
+    } catch {
+      // A transient heartbeat failure must not kill the translation worker.
+    }
+  }, 60000);
+  heartbeat.unref();
   const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
   const glossary = existsSync(terminologyPath) ? await fs.readFile(terminologyPath, "utf8") : "# 术语表\n\n以论文原文为准。\n";
   const sourceHash = translationSourceHash(paper, {
@@ -900,8 +943,16 @@ async function main() {
   await fs.rename(temporaryReportPath, reportPath);
   const status = validationIssues.length ? "needs_review" : "completed";
   const validationError = validationIssues.length ? validationIssues.join("；") : null;
-  db.prepare("UPDATE paper_translations SET status = ?, translated_chars = ?, error = ?, progress_phase = ?, progress_message = ?, progress_current = ?, progress_total = ?, lease_expires_at = NULL, job_pid = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
-    .run(status, finalMarkdown.length, validationError, status, status === "completed" ? "翻译和结构校验已完成" : "翻译已生成，但结构校验需要人工复核", chunks.length, chunks.length, paperId);
+  finishTranslationJob(db, paperId, jobToken, {
+    status,
+    error: validationError,
+    progressPhase: status,
+    progressMessage: status === "completed" ? "翻译和结构校验已完成" : "翻译已生成，但结构校验需要人工复核",
+    translatedChars: finalMarkdown.length,
+    progressCurrent: chunks.length,
+    progressTotal: chunks.length,
+  });
+  clearInterval(heartbeat);
   db.close();
 }
 
@@ -910,12 +961,17 @@ main().catch(async (error) => {
   if (Number.isInteger(paperId) && paperId > 0) {
     const db = new Database(dbPath);
     ensureResearchFeatureSchema(db);
+    const jobToken = process.env.TRANSLATION_JOB_TOKEN || "";
     const message = error instanceof Error ? error.message : String(error);
     const needsReview = /^(?:SOURCE_QUALITY|STRUCTURE_QUALITY):/.test(message);
     const structureIssue = /^STRUCTURE_QUALITY:/.test(message);
     const cleanMessage = message.replace(/^(?:SOURCE_QUALITY|STRUCTURE_QUALITY):\s*/, "");
-    db.prepare("UPDATE paper_translations SET status = ?, error = ?, progress_phase = ?, progress_message = ?, lease_expires_at = NULL, job_pid = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
-      .run(needsReview ? "needs_review" : "failed", cleanMessage, needsReview ? (structureIssue ? "binding_review" : "source_quality_check") : "failed", cleanMessage, paperId);
+    finishTranslationJob(db, paperId, jobToken, {
+      status: needsReview ? "needs_review" : "failed",
+      error: cleanMessage,
+      progressPhase: needsReview ? (structureIssue ? "binding_review" : "source_quality_check") : "failed",
+      progressMessage: cleanMessage,
+    });
     db.close();
   }
   console.error(error instanceof Error ? error.message : error);

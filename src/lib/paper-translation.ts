@@ -123,6 +123,32 @@ export function inspectSourceQuality(markdown: string): SourceQualityReport {
   };
 }
 
+/**
+ * Completeness gate for the local pdftotext fallback. `inspectSourceQuality`
+ * only catches corrupted text; this checks whether the extraction plausibly
+ * captured the whole document (text volume per page, embedded images).
+ */
+export function assessTextExtractionCompleteness(
+  markdown: string,
+  stats: { pages?: number; embeddedImages?: number; minCharsPerPage?: number; minChars?: number },
+) {
+  const issues: string[] = [];
+  const textChars = markdown.replace(/\s+/g, "").length;
+  const pages = stats.pages || 0;
+  const minCharsPerPage = stats.minCharsPerPage ?? 500;
+  if (pages > 0) {
+    if (textChars < pages * minCharsPerPage) {
+      issues.push(`文本覆盖率过低：约 ${Math.round(textChars / pages)} 字/页（${pages} 页），疑似扫描件或内容丢失`);
+    }
+  } else if (textChars < (stats.minChars ?? 1000)) {
+    issues.push("无法确认页数且文本过短");
+  }
+  if ((stats.embeddedImages || 0) > 0 && !/!\[[^\]]*\]\(|<img\b/i.test(markdown)) {
+    issues.push(`PDF 含 ${stats.embeddedImages} 个嵌入图片，但本地提取没有任何图片引用，图片/表格可能已丢失`);
+  }
+  return { ok: issues.length === 0, issues, textChars };
+}
+
 type TranslationRuntime = {
   model?: string;
   parser?: string;

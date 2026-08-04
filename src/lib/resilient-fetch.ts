@@ -52,6 +52,8 @@ export type FetchWithRetryOptions = {
   retryPost?: boolean;
   /** Also retry transient HTTP statuses for POST requests. */
   retryStatusOnPost?: boolean;
+  /** Best-effort deduplication header (X-Idempotency-Key) for retried POST requests. */
+  idempotencyKey?: string;
   retryableStatus?: RetryableStatusPredicate;
   signal?: AbortSignal;
   onRetry?: (info: { attempt: number; error?: unknown; status?: number; delayMs: number }) => void;
@@ -88,9 +90,9 @@ function sleep(ms: number, signal?: AbortSignal) {
   });
 }
 
-function attemptSignal(signal: AbortSignal | undefined, timeoutMs: number) {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+function attemptSignal(initSignal: AbortSignal | null | undefined, optionsSignal: AbortSignal | undefined, timeoutMs: number) {
+  const signals = [initSignal, optionsSignal, AbortSignal.timeout(timeoutMs)].filter(Boolean) as AbortSignal[];
+  return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
 }
 
 export async function fetchWithRetry(
@@ -106,12 +108,16 @@ export async function fetchWithRetry(
   const isPost = method === "POST";
   const retryableStatus = options.retryableStatus ?? isRetryableHttpStatus;
   const retryStatus = !isPost || options.retryStatusOnPost === true;
+  const headers = new Headers(init.headers);
+  if (isPost && options.idempotencyKey && !headers.has("X-Idempotency-Key")) {
+    headers.set("X-Idempotency-Key", options.idempotencyKey);
+  }
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     let response: Response | undefined;
     try {
-      response = await fetch(url, { ...init, signal: attemptSignal(options.signal, timeoutMs) });
+      response = await fetch(url, { ...init, headers, signal: attemptSignal(init.signal, options.signal, timeoutMs) });
     } catch (error) {
       lastError = error;
       const retryable = (!isPost || options.retryPost === true) && isRetryableNetworkError(error);

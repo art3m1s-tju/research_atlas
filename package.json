@@ -20,7 +20,7 @@
     "setup:translation-parser": "bash scripts/setup-translation-parser.sh",
     "clean:relevance": "tsx scripts/clean-relevance.ts",
     "test:relevance": "tsx scripts/check-relevance.ts",
-    "test:translation": "node --import tsx --test tests/paper-translation.test.ts tests/resilient-fetch.test.ts",
+    "test:translation": "node --import tsx --test tests/paper-translation.test.ts tests/resilient-fetch.test.ts tests/translation-job.test.ts",
     "sync:incremental": "tsx scripts/update-citations.ts",
     "digest:daily": "tsx scripts/generate-daily-digest.ts"
   },

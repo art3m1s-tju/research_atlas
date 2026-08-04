@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assessTextExtractionCompleteness,
   extractPaperAffiliations,
   extractPaperAuthorAffiliations,
   annotateStructuredBindings,
@@ -284,6 +285,20 @@ test("source repair leaves ordinary long prose untouched", () => {
   const repaired = repairSourceQuality(source);
   assert.deepEqual(repaired.repairs, []);
   assert.equal(repaired.markdown, source);
+});
+
+test("text extraction completeness rejects sparse text and lost embedded images", () => {
+  const dense = "## Abstract\n\n" + "The quick brown fox jumps over the lazy dog. ".repeat(60);
+  assert.equal(assessTextExtractionCompleteness(dense, { pages: 4 }).ok, true);
+  const sparse = "Short text.";
+  const sparseReport = assessTextExtractionCompleteness(sparse, { pages: 12 });
+  assert.equal(sparseReport.ok, false);
+  assert.ok(sparseReport.issues.some((issue) => issue.includes("覆盖率过低")));
+  const lostImages = assessTextExtractionCompleteness(dense, { pages: 4, embeddedImages: 9 });
+  assert.equal(lostImages.ok, false);
+  assert.ok(lostImages.issues.some((issue) => issue.includes("嵌入图片")));
+  const keptImages = assessTextExtractionCompleteness(`${dense}\n\n![Image](assets/figure-1.png)`, { pages: 4, embeddedImages: 9 });
+  assert.equal(keptImages.ok, true);
 });
 
 test("semantic table-image decisions resolve a nearby table caption", () => {

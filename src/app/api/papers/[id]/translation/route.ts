@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { ensureResearchFeatureSchema } from "@/lib/research-features";
 import { extractPaperAffiliations, extractPaperAuthorAffiliations, translationDirectory, translationSourceHash, translationUrlCandidates } from "@/lib/paper-translation";
+import { claimTranslationJob, expireStaleTranslationJob, failTranslationJob } from "@/lib/translation-job";
 import { decodePaperId } from "@/lib/paper-id";
 
 const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
@@ -45,6 +46,11 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     const paper = paperFromId(db, id);
     if (!paper) return NextResponse.json({ error: "论文不存在" }, { status: 404 });
     const row = db.prepare("SELECT status, source_url, output_dir, error, source_chars, translated_chars, progress_phase, progress_current, progress_total, progress_message, started_at, updated_at FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
+    if (row && ["pending", "running"].includes(row.status) && expireStaleTranslationJob(db, paper.id).changes > 0) {
+      row.status = "failed";
+      row.error = "翻译任务已过期（worker 可能已崩溃），请重新点击翻译";
+      row.lease_expires_at = null;
+    }
     const params = new URL(request.url).searchParams;
     const asset = params.get("asset");
     if (asset) {
@@ -118,23 +124,19 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     if (["pending", "running"].includes(existing?.status) && !cacheInvalidated && !leaseExpired) {
       return NextResponse.json({ success: true, cached: false, status: existing.status, message: "翻译任务已在执行。" });
     }
-    const claimed = db.prepare("UPDATE paper_translations SET status = 'pending', source_hash = ?, output_dir = ?, error = NULL, attempts = attempts + 1, progress_phase = 'queued', progress_current = 0, progress_total = 0, progress_message = '任务已进入队列，等待翻译进程启动', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, lease_expires_at = datetime('now', '+5 minutes'), job_pid = NULL WHERE paper_id = ? AND (status NOT IN ('pending', 'running') OR lease_expires_at IS NULL OR lease_expires_at < datetime('now') OR progress_message LIKE '旧缓存已失效%')")
-      .run(sourceHash, translationDirectory(paper.id), paper.id);
-    if (claimed.changes === 0) return NextResponse.json({ success: true, cached: false, status: existing?.status || "pending", message: "翻译任务已在执行。" });
+    const claim = claimTranslationJob(db, paper.id, sourceHash, translationDirectory(paper.id));
+    if (!claim.claimed) return NextResponse.json({ success: true, cached: false, status: existing?.status || "pending", message: "翻译任务已在执行。" });
+    const jobToken = claim.jobToken as string;
     mkdirSync(path.join(process.cwd(), "data"), { recursive: true });
     const logDescriptor = openSync(path.join(process.cwd(), "data", `translation-${paper.id}.log`), "a");
     const command = process.platform === "win32" ? "npx.cmd" : "npx";
-    const child = spawn(command, ["tsx", path.join(process.cwd(), "scripts", "translate-paper.ts"), "--paper-id", String(paper.id)], { cwd: process.cwd(), detached: true, stdio: ["ignore", logDescriptor, logDescriptor], env: { ...process.env, TRANSLATION_FORCE: payload.force ? "1" : "0" } });
+    const child = spawn(command, ["tsx", path.join(process.cwd(), "scripts", "translate-paper.ts"), "--paper-id", String(paper.id)], { cwd: process.cwd(), detached: true, stdio: ["ignore", logDescriptor, logDescriptor], env: { ...process.env, TRANSLATION_FORCE: payload.force ? "1" : "0", TRANSLATION_JOB_TOKEN: jobToken } });
     closeSync(logDescriptor);
     const markFailed = (message: string) => {
       try {
         const recoveryDb = new Database(DB_PATH);
         ensureResearchFeatureSchema(recoveryDb);
-        const row = recoveryDb.prepare("SELECT status FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
-        if (row && ["pending", "running"].includes(row.status)) {
-          recoveryDb.prepare("UPDATE paper_translations SET status = 'failed', error = ?, progress_phase = 'failed', progress_message = ?, lease_expires_at = NULL, job_pid = NULL, updated_at = CURRENT_TIMESTAMP WHERE paper_id = ?")
-            .run(message, message, paper.id);
-        }
+        failTranslationJob(recoveryDb, paper.id, jobToken, message);
         recoveryDb.close();
       } catch {
         // The original task row is the source of truth; a late write failure is not worth crashing the API.
