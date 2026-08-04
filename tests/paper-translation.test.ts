@@ -7,6 +7,7 @@ import {
   annotateStructuredBindings,
   applySemanticBindingDecisions,
   buildStructuredBindingManifest,
+  findUnknownProtectedTokens,
   inspectSourceQuality,
   repairSourceQuality,
   normalizeTranslatedMarkdown,
@@ -359,6 +360,17 @@ test("translation prompt includes the project glossary and structural rules", ()
   assert.match(prompt, /world model \| 世界模型/);
   assert.match(prompt, /表格的列数、行数/);
   assert.match(prompt, /作者名/);
+  assert.match(prompt, /严禁新增、复制、猜测或重新编号/);
+});
+
+test("unknown protected placeholders are detected in model output", () => {
+  const known = ["[[ATLAS_BIND_000000]]", "[[ATLAS_TABLE_000004]]"];
+  assert.deepEqual(findUnknownProtectedTokens("[[ATLAS_BIND_000000]][[ATLAS_TABLE_000004]]", known), []);
+  assert.deepEqual(findUnknownProtectedTokens("[[ATLAS_BIND_000004]][[ATLAS_TABLE_000006]]", known), [
+    "[[ATLAS_BIND_000004]]",
+    "[[ATLAS_TABLE_000006]]",
+  ]);
+  assert.deepEqual(findUnknownProtectedTokens("普通文本", known), []);
 });
 
 test("translation cache hash changes with model, parser settings, and glossary", () => {

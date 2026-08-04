@@ -1447,10 +1447,17 @@ export function translationPrompt(chunk: string, index: number | string, total: 
 9. 代码块原样保留并用 Markdown 代码围栏；不要用代码围栏包住整段译文。
 10. 严格遵守下方术语表；作者名、模型名、数据集名、指标名和引用键不要翻译。
 11. 不要输出“翻译如下”、“上接前文”、“下接后文”、总结、解释、分隔线或本片段之外的内容。
+12. 严禁新增、复制、猜测或重新编号任何 [[ATLAS_...]] 占位符：输出中只能出现输入片段里逐字符存在过的占位符，且每个只能出现一次；对应图片/表格/公式缺失时保留原占位符，不要编造新占位符或新内容。
 
 术语表：
 ${glossary || "以论文原文为准；作者名、模型名、数据集名和指标名保持不变。"}
 
 原文片段（第 ${index}/${total}）：
 ${chunk}`;
+}
+
+/** Detect protected placeholders in model output that were not part of the input chunk. */
+export function findUnknownProtectedTokens(content: string, knownTokens: string[] = []) {
+  const known = new Set(knownTokens);
+  return [...new Set([...content.matchAll(/\[\[ATLAS_[A-Z]+_\d{6}\]\]/g)].map((match) => match[0]))].filter((token) => !known.has(token));
 }

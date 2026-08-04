@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
 import { failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationProgress } from "../src/lib/translation-job";
 
@@ -643,6 +643,8 @@ async function translateChunk(chunk: string, index: number | string, total: numb
   if (typeof content !== "string" || !content.trim()) throw new Error("DeepSeek 返回空译文");
   const invalidTokens = requiredTokens.filter((token) => tokenOccurrenceCount(content, token) !== 1);
   if (invalidTokens.length) throw new Error(`第 ${index}/${total} 分块中，DeepSeek 改写或遗漏了 ${invalidTokens.length} 个公式/图片/表格占位符`);
+  const inventedTokens = findUnknownProtectedTokens(content, requiredTokens);
+  if (inventedTokens.length) throw new Error(`第 ${index}/${total} 分块中，DeepSeek 新增了 ${inventedTokens.length} 个不存在的公式/图片/表格占位符`);
   // Source formulas are protected as placeholders. Allow the model to wrap
   // bare variables such as b or T in inline math, but reject newly invented
   // display/complex formulas early so the chunk can be retried safely.
@@ -684,7 +686,11 @@ async function translateStructuredChunk(chunk: string, index: number | string, t
   if (protectedChunk.protectedTokens.length && tokenOnly) return chunk;
   try {
     const translated = await translateChunk(protectedChunk.text, index, total, glossary, protectedChunk.protectedTokens.map((item) => item.token), signal);
-    return restoreStructuredMarkdown(normalizeTranslatedMarkdown(translated), protectedChunk.protectedTokens);
+    const restored = restoreStructuredMarkdown(normalizeTranslatedMarkdown(translated), protectedChunk.protectedTokens);
+    if (/\[\[ATLAS_[A-Z]+_\d{6}\]\]/.test(restored)) {
+      throw new Error(`第 ${index}/${total} 分块中仍有未恢复的结构化占位符`);
+    }
+    return restored;
   } catch (error) {
     if (signal?.aborted) throw error;
     const tokenFailure = error instanceof Error && /占位符|新增了原文不存在的(?:块级)?公式/.test(error.message);
