@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
 import { assertTranslationOwnership, claimTranslationJob, failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationJobMetadata, updateTranslationProgress } from "../src/lib/translation-job";
 
@@ -436,7 +436,7 @@ async function parseAndValidateSource(pdfPath: string, sourceUrl: string, output
  * recovered image still goes through the Qwen visual reviewer.
  */
 const PAPER_CAPTION_NUMBER = String.raw`(?:\d+|[IVXLCDM]+)`;
-const PAPER_CAPTION_PATTERN_SOURCE = `\\b(Figure|Fig\\.?|Table|图|表)\\s*${PAPER_CAPTION_NUMBER}\\s*[:：-]`;
+const PAPER_CAPTION_PATTERN_SOURCE = `\\b(Figure|Fig\\.?|Table|图|表)\\s*${PAPER_CAPTION_NUMBER}\\s*[.:：-]`;
 const PAPER_CAPTION_PATTERN = new RegExp(PAPER_CAPTION_PATTERN_SOURCE, "gi");
 
 function isAuxiliaryPlotTable(html: string) {
@@ -843,7 +843,7 @@ async function main() {
   if (!Number.isInteger(paperId) || paperId <= 0) throw new Error("用法：tsx scripts/translate-paper.ts --paper-id <id>");
   const db = new Database(dbPath);
   ensureResearchFeatureSchema(db);
-  const paper = db.prepare("SELECT id, title, abstract, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE id = ?").get(paperId) as any;
+  const paper = db.prepare("SELECT id, title, abstract, authors, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE id = ?").get(paperId) as any;
   if (!paper) throw new Error("论文不存在");
   if (!process.env.DEEPSEEK_API_KEY) throw new Error("DEEPSEEK_API_KEY 未配置");
   const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
@@ -996,6 +996,14 @@ async function main() {
   const translatedBodyWithBindings = numberReferenceSection(normalizeTranslatedStructureLabels(normalizeTranslatedMarkdown(restoreHeadingLayout(source, normalizeExtraNumberedHeadings(source, restoreBindingOrder(source, results.join("\n\n").replace(/\n{3,}/g, "\n\n").trim())))), true));
   const validationMarkdown = `# ${translatedTitle}\n\n${translatedBodyWithBindings}`.trim();
   const validationIssues = validateTranslatedMarkdown(source, validationMarkdown, translatedTitle);
+  const pdfAuthorNames = extractPaperAuthorAffiliations(extracted.text).map((entry) => entry.name);
+  const dbAuthorNames = String(paper.authors || "").split(/[,;]/).map((name) => name.trim()).filter(Boolean);
+  const authorConflict = pdfAuthorNames.length > 0 && dbAuthorNames.length > 0
+    ? compareAuthorSources(pdfAuthorNames, dbAuthorNames)
+    : null;
+  if (authorConflict?.conflicting) {
+    validationIssues.push(`作者源冲突：PDF 独有 ${authorConflict.pdfOnly.join("、") || "无"}，数据库独有 ${authorConflict.dbOnly.join("、") || "无"}`);
+  }
   const finalMarkdown = stripStructuredBindingMarkers(validationMarkdown).replace(/\n{3,}/g, "\n\n").trim();
   const translationPath = path.join(outputDirectory, "translation_zh.md");
   const candidatePath = path.join(outputDirectory, "translation_candidate.md");
@@ -1006,7 +1014,16 @@ async function main() {
   const temporaryCandidatePath = `${candidatePath}.tmp-${process.pid}`;
   const temporaryReportPath = `${reportPath}.tmp-${process.pid}`;
   await fs.writeFile(path.join(outputDirectory, "structure_manifest.json"), JSON.stringify({ ...resolvedManifest, document_ir: documentIR, parser_manifest: extractedManifest, semantic_review: semanticReview }, null, 2), "utf8");
-  await fs.writeFile(path.join(outputDirectory, "translation_meta.json"), JSON.stringify({ title_original: paper.title, title_zh: translatedTitle, authors: paper.authors || "", author_affiliations: extractPaperAuthorAffiliations(extracted.text), affiliations: extractPaperAffiliations(extracted.text, paper.title), source_url: extracted.url }, null, 2), "utf8");
+  await fs.writeFile(path.join(outputDirectory, "translation_meta.json"), JSON.stringify({
+    title_original: paper.title,
+    title_zh: translatedTitle,
+    authors: paper.authors || "",
+    author_affiliations: extractPaperAuthorAffiliations(extracted.text),
+    affiliations: extractPaperAffiliations(extracted.text, paper.title),
+    author_source_conflict: authorConflict?.conflicting || false,
+    author_source_conflict_detail: authorConflict?.conflicting ? { pdf_only: authorConflict.pdfOnly, db_only: authorConflict.dbOnly } : null,
+    source_url: extracted.url,
+  }, null, 2), "utf8");
   if (validationIssues.length) {
     await fs.writeFile(temporaryCandidatePath, `${finalMarkdown}\n`, "utf8");
     await fs.rename(temporaryCandidatePath, candidatePath);

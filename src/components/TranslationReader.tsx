@@ -132,7 +132,7 @@ export default function TranslationReader({ id }: { id: string }) {
               components={{
                 p: ({ children }) => {
                   const text = plainText(children).trim();
-                  const caption = /^\*\*(?:图|表)\s*\d+\s*[:：]\*\*/i.test(text) || /^(?:Figure|Fig\.?|Table)\s*\d+\s*[:：-]/i.test(text);
+                  const caption = /^\*\*(?:图|表)\s*\d+\s*[.:：]\*\*/i.test(text) || /^(?:Figure|Fig\.?|Table)\s*\d+\s*[.:：-]/i.test(text);
                   return <p className={caption ? "paper-caption" : undefined}>{children}</p>;
                 },
                 table: ({ children }) => <div className="paper-table-wrap"><table>{children}</table></div>,

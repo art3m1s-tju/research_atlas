@@ -453,12 +453,41 @@ export function extractPaperAffiliations(markdown: string, title: string): Paper
   for (const line of frontMatter) {
     const cleaned = line.replace(/\$/g, "").replace(/[{}]/g, "").replace(/\\\^/g, "^").trim();
     const match = cleaned.match(/^\^?(\d+)\s+(.+)$/);
-    if (!match || normalizedHeadingText(match[2]) === normalizedHeadingText(title)) continue;
-    const index = Number(match[1]);
-    const text = match[2].replace(/\s{2,}/g, " ").trim();
-    if (text && !affiliations.some((item) => item.index === index && item.text === text)) affiliations.push({ index, text });
+    if (match && normalizedHeadingText(match[2]) !== normalizedHeadingText(title)) {
+      const index = Number(match[1]);
+      const text = match[2].replace(/\s{2,}/g, " ").trim();
+      if (text && !affiliations.some((item) => item.index === index && item.text === text)) affiliations.push({ index, text });
+    }
+    // IEEE front matter often prints affiliations inline after the author
+    // list: "... Zhao$^{1}$, CASIA, $^{2}$Li Auto, $^{3}$PCL". Match every
+    // superscript marker followed by the organisation name on the same line.
+    const inlinePattern = /(?:\^(\d+)|\u00B9|\u00B2|\u00B3|\u2074|\u2075|\u2076|\u2077|\u2078|\u2079|\u2070)\s*,?\s*([A-Za-z][^,$]{1,80})/g;
+    const unicodeSuperscripts: Record<string, number> = { "\u00B9": 1, "\u00B2": 2, "\u00B3": 3, "\u2070": 0, "\u2074": 4, "\u2075": 5, "\u2076": 6, "\u2077": 7, "\u2078": 8, "\u2079": 9 };
+    for (const inline of cleaned.matchAll(inlinePattern)) {
+      const index = inline[1] ? Number(inline[1]) : unicodeSuperscripts[inline[0][0]] ?? NaN;
+      const text = inline[2].replace(/\s{2,}/g, " ").trim();
+      // An organisation name never carries another author marker; skipping
+      // segments that still contain "^" prevents "Yinfeng Gao^1"-style author
+      // fragments from being mistaken for an affiliation.
+      if (text.includes("^")) continue;
+      if (Number.isFinite(index) && text && !affiliations.some((item) => item.index === index && item.text === text)) affiliations.push({ index, text });
+    }
   }
   return affiliations;
+}
+
+/** Normalise an author name so PDF and database sources can be compared. */
+export function normalizeAuthorName(name: string): string {
+  return name.toLowerCase().replace(/^and\s+/, "").replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+}
+
+/** Reconcile the PDF author list with the database author list (set equality). */
+export function compareAuthorSources(pdfAuthors: string[], dbAuthors: string[]) {
+  const pdf = new Set(pdfAuthors.map(normalizeAuthorName).filter(Boolean));
+  const db = new Set(dbAuthors.map(normalizeAuthorName).filter(Boolean));
+  const pdfOnly = [...pdf].filter((name) => !db.has(name));
+  const dbOnly = [...db].filter((name) => !pdf.has(name));
+  return { conflicting: pdfOnly.length > 0 || dbOnly.length > 0, pdfOnly, dbOnly };
 }
 
 /** Match each author to the numbered affiliations printed in the PDF front matter. */
@@ -491,7 +520,7 @@ type CaptionKind = "figure" | "table";
 type CaptionEntry = { kind: CaptionKind; number: number };
 
 const CAPTION_NUMBER_PATTERN = String.raw`(?:\d+|[IVXLCDM]+|\$[IVXLCDM]+\$)`;
-const captionLabelPattern = new RegExp(`(^|\\n|>\\s*)(\\*\\*)?(Figure|Fig\\.?|Table|图|表)\\s*(${CAPTION_NUMBER_PATTERN})\\s*([:：-])`, "gim");
+const captionLabelPattern = new RegExp(`(^|\\n|>\\s*)(\\*\\*)?(Figure|Fig\\.?|Table|图|表)\\s*(${CAPTION_NUMBER_PATTERN})\\s*([.:：-])`, "gim");
 
 function captionNumberValue(value: string) {
   value = value.replace(/\$/g, "");
@@ -686,11 +715,11 @@ export function buildStructuredBindingManifest(markdown: string): StructuredBind
       captionNumber: selected?.caption.number,
       captionText: selected?.caption.text,
       distance: selected?.distance,
-      // Without captions there is nothing to bind: the parser's intrinsic
-      // kind (HTML table vs image) is authoritative and must not block the
-      // paper waiting for a semantic reviewer.
+      // A visual object with no caption anywhere in the document has no
+      // identity evidence (number, kind, resource). That must fail closed and
+      // go to needs_review instead of being published as confidently bound.
       ambiguous: captions.length === 0
-        ? false
+        ? true
         : !selected || !selected.isDirectional || selected.caption.kind !== object.kind || selected.distance > 1800,
     };
     if (selected) usedCaptions.add(selected.caption.id);
@@ -699,6 +728,27 @@ export function buildStructuredBindingManifest(markdown: string): StructuredBind
   }
 
   for (const caption of captions) if (!usedCaptions.has(caption.id)) ambiguous.push(caption.id);
+
+  // Caption identity must be a one-to-one, contiguous sequence per kind.
+  // Missing, duplicate, or skipped Figure/Table numbers mean the source
+  // structure was not understood, so every bound object of that kind is
+  // flagged for review instead of publishing with a plausible-looking count.
+  if (objects.length > 0 && captions.length === 0) {
+    for (const object of manifestObjects) object.ambiguous = true;
+    ambiguous.push(...manifestObjects.map((object) => object.id));
+  }
+  for (const kind of ["figure", "table"] as const) {
+    const bound = manifestObjects.filter((object) => !object.ambiguous && object.captionId && object.captionKind === kind);
+    const numbers = bound.map((object) => object.captionNumber).filter((number): number is number => Number.isFinite(number));
+    const unique = new Set(numbers);
+    const contiguous = numbers.length > 0 && unique.size === numbers.length && Math.max(...numbers) === numbers.length;
+    if (!contiguous) {
+      for (const object of bound) {
+        object.ambiguous = true;
+        ambiguous.push(object.id);
+      }
+    }
+  }
   return { objects: manifestObjects, captions, ambiguous: [...new Set(ambiguous)] };
 }
 
@@ -725,17 +775,6 @@ export function applySemanticBindingDecisions(manifest: StructuredBindingManifes
     object.distance = undefined;
     object.ambiguous = true;
     changed.add(object.id);
-  }
-
-  // A parser run that produced zero captions has nothing to bind; a confident
-  // semantic decision (figure vs table) is then sufficient to publish. Without
-  // this branch, every object would remain ambiguous and block the paper.
-  if (changed.size > 0 && manifest.captions.length === 0) {
-    for (const object of manifest.objects) {
-      if (changed.has(object.id)) object.ambiguous = false;
-    }
-    manifest.ambiguous = manifest.objects.filter((object) => object.ambiguous).map((object) => object.id);
-    return manifest;
   }
 
   // When semantic review covered the document and the parser produced a

@@ -7,6 +7,7 @@ import {
   annotateStructuredBindings,
   applySemanticBindingDecisions,
   buildStructuredBindingManifest,
+  compareAuthorSources,
   findUnknownProtectedTokens,
   inspectSourceQuality,
   repairSourceQuality,
@@ -484,13 +485,43 @@ test("semantic table-image decisions resolve a nearby table caption", () => {
   assert.equal(manifest.objects[0].captionNumber, 3);
 });
 
-test("objects without captions are intrinsically bound and never block publication", () => {
+test("objects without captions fail closed as ambiguous instead of publishing", () => {
   const source = "![Image](assets/figure-1.png)\n\n<table><tr><td>A</td></tr></table>";
   const manifest = buildStructuredBindingManifest(source);
   assert.equal(manifest.captions.length, 0);
-  assert.equal(manifest.ambiguous.length, 0);
-  assert.equal(manifest.objects[0].kind, "figure");
-  assert.equal(manifest.objects[1].kind, "table");
+  assert.equal(manifest.objects.length, 2);
+  assert.equal(manifest.ambiguous.length, 2);
+  assert.ok(manifest.objects.every((object) => object.ambiguous));
+});
+
+test("extractPaperAffiliations parses inline superscript organisations", () => {
+  const source = [
+    "# World4Drive: Test",
+    "",
+    "Yupeng Zheng$^{1,2,3}$, Pengxuan Yang$^{1,2}$, and Dongbin Zhao$^{1}$, CASIA, $^{2}$Li Auto, $^{3}$PCL, $^{4}$NUS, $^{5}$Tsinghua,",
+    "",
+    "## Abstract",
+    "",
+    "Body",
+  ].join("\n");
+  const affiliations = extractPaperAffiliations(source, "World4Drive: Test");
+  assert.deepEqual(affiliations, [
+    { index: 1, text: "CASIA" },
+    { index: 2, text: "Li Auto" },
+    { index: 3, text: "PCL" },
+    { index: 4, text: "NUS" },
+    { index: 5, text: "Tsinghua" },
+  ]);
+});
+
+test("compareAuthorSources reports PDF/database conflicts after normalisation", () => {
+  const pdfAuthors = ["Yupeng Zheng", "Pengxuan Yang", "and Dongbin Zhao"];
+  const dbAuthors = ["Yupeng Zheng", "Pengxuan Yang", "Dongbin Zhao", "XianPeng Lang"];
+  const result = compareAuthorSources(pdfAuthors, dbAuthors);
+  assert.equal(result.conflicting, true);
+  assert.deepEqual(result.dbOnly, ["xianpeng lang"]);
+  assert.deepEqual(result.pdfOnly, []);
+  assert.deepEqual(compareAuthorSources(pdfAuthors, ["Yupeng Zheng", "Pengxuan Yang", "Dongbin Zhao"]).conflicting, false);
 });
 
 test("nearest mismatched caption is retained for semantic review instead of stealing a later caption", () => {
@@ -499,6 +530,48 @@ test("nearest mismatched caption is retained for semantic review instead of stea
   assert.equal(manifest.objects[0].captionNumber, 1);
   assert.equal(manifest.objects[1].captionNumber, 2);
   assert.ok(manifest.ambiguous.includes("table-001"));
+  // Table numbering starts at 2 (Table 1 is missing), so identity is broken
+  // and the second object must also fail closed instead of publishing.
+  assert.ok(manifest.ambiguous.includes("table-002"));
+});
+
+test("semantic decisions cannot clear ambiguity when no captions exist", () => {
+  const source = "![Image](assets/figure-1.png)\n\n<table><tr><td>A</td></tr></table>";
+  const manifest = buildStructuredBindingManifest(source);
+  assert.equal(manifest.captions.length, 0);
+  applySemanticBindingDecisions(manifest, [
+    { id: "figure-001", semantic_kind: "figure", confidence: 0.99, reason: "visual" },
+    { id: "table-001", semantic_kind: "table", confidence: 0.99, reason: "visual" },
+  ]);
+  assert.ok(manifest.objects.every((object) => object.ambiguous));
+  assert.ok(manifest.ambiguous.length > 0);
+});
+
+test("IEEE period captions inside HTML wrappers are parsed and mis-OCR tables fail closed", () => {
+  const source = [
+    '<div style="text-align: center;">Figure 1. Our proposed method demonstrates convergence.</div>',
+    "",
+    "<table><tr><td>Epoch</td></tr><tr><td>0</td></tr></table>",
+    "",
+    '<div style="text-align: center;">Table 1. End-to-end planning results.</div>',
+  ].join("\n");
+  const manifest = buildStructuredBindingManifest(source);
+  assert.equal(manifest.captions.length, 2);
+  assert.deepEqual(manifest.captions.map((caption) => [caption.kind, caption.number]), [["figure", 1], ["table", 1]]);
+  assert.ok(manifest.ambiguous.includes("table-001"));
+});
+
+test("figure/table number gaps or duplicates fail closed as ambiguous", () => {
+  const source = "Figure 1: First\n\n![Image](assets/figure-1.png)\n\nFigure 3: Third\n\n![Image](assets/figure-3.png)";
+  const manifest = buildStructuredBindingManifest(source);
+  assert.ok(manifest.ambiguous.includes("figure-001"));
+  assert.ok(manifest.ambiguous.includes("figure-002"));
+});
+
+test("protectStructuredMarkdown recognises period-separated IEEE captions", () => {
+  const protectedResult = protectStructuredMarkdown("Figure 1. Chart\n\nTable 2. Results");
+  assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_CAPTION_") && token.value === "图 1."));
+  assert.ok(protectedResult.protectedTokens.some((token) => token.token.startsWith("[[ATLAS_CAPTION_") && token.value === "表 2."));
 });
 
 test("restoreCaptionSequence uses source order instead of translated caption guesses", () => {
