@@ -11,10 +11,12 @@ import {
   findUnknownProtectedTokens,
   inspectSourceQuality,
   repairSourceQuality,
+  resolveInstitutionNames,
   normalizeTranslatedMarkdown,
   normalizeExtraNumberedHeadings,
   normalizeTranslatedStructureLabels,
   numberReferenceSection,
+  pdfBboxCropArgs,
   pdfLinksFromLandingHtml,
   prepareTranslationSource,
   protectStructuredMarkdown,
@@ -524,6 +526,25 @@ test("compareAuthorSources reports PDF/database conflicts after normalisation", 
   assert.deepEqual(compareAuthorSources(pdfAuthors, ["Yupeng Zheng", "Pengxuan Yang", "Dongbin Zhao"]).conflicting, false);
 });
 
+test("resolveInstitutionNames maps known aliases and marks unknown ones low confidence", () => {
+  const affiliations = [
+    { index: 1, text: "CASIA" },
+    { index: 2, text: "Li Auto" },
+    { index: 3, text: "Some Unknown Lab" },
+  ];
+  const resolved = resolveInstitutionNames(affiliations, [
+    { original: "CASIA", canonical_en: "Institute of Automation, Chinese Academy of Sciences", name_zh: "中国科学院自动化研究所" },
+    { original: "Li Auto", canonical_en: "Li Auto", name_zh: "理想汽车" },
+  ]);
+  assert.equal(resolved[0].name_zh, "中国科学院自动化研究所");
+  assert.equal(resolved[0].confidence, 1);
+  assert.equal(resolved[1].name_zh, "理想汽车");
+  assert.equal(resolved[1].confidence, 1);
+  assert.equal(resolved[2].name_zh, "");
+  assert.equal(resolved[2].confidence, 0);
+  assert.equal(resolved[2].canonical_en, "Some Unknown Lab");
+});
+
 test("nearest mismatched caption is retained for semantic review instead of stealing a later caption", () => {
   const source = "Figure 1: OCR mislabeled table caption.\n\n<table><tr><td>A</td></tr></table>\n\nTable 2: Later table.\n\n<table><tr><td>B</td></tr></table>";
   const manifest = buildStructuredBindingManifest(source);
@@ -651,6 +672,7 @@ test("translation cache hash invalidates the previous format and prompt versions
   const paper = { title: "Paper", abstract: "Abstract", pdf_url: "https://example.com/paper.pdf", doi: "10.1/example" };
   const runtime = { model: "model-a", parser: "docling", formulaEnabled: "1", glossary: "A" };
   const current = translationSourceHash(paper, runtime);
+  assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v16-source-ir" }));
   assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v15-source-ir" }));
   assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v14-source-ir" }));
   assert.notEqual(current, translationSourceHash(paper, { ...runtime, promptVersion: "academic-markdown-v9-source-ir" }));
@@ -670,6 +692,11 @@ test("translationUrlCandidates adds a DOI landing source and prefers direct PDFs
   assert.equal(mixed[0], "https://example.com/paper.pdf");
   assert.ok(mixed.includes("https://arxiv.org/pdf/2401.00001.pdf"));
   assert.equal(new Set(mixed).size, mixed.length);
+});
+
+test("pdfBboxCropArgs converts Docling y-up bbox to pdftoppm top-left pixels", () => {
+  const crop = pdfBboxCropArgs([320.1185607910156, 554.5768280029297, 551.699951171875, 418.1845397949219], 792, 180);
+  assert.deepEqual(crop, { x: 800, y: 594, width: 579, height: 341 });
 });
 
 test("strict validation accepts a structurally equivalent translation", () => {
@@ -784,4 +811,13 @@ test("structure labels normalize captions and headings without touching body ref
   assert.match(normalized, /\*\*表 3：\*\* 消融结果。/);
   assert.match(normalized, /## 参考文献/);
   assert.match(normalizeTranslatedStructureLabels("<!--ATLAS_BIND_table-008-->Table 8: Caption", true), /ATLAS_BIND_table-008\-\-\>\*\*表 8：\*\*/);
+});
+
+test("structure labels normalize period and punctuation-free captions to bold labels", () => {
+  const input = "Figure 1. Convergence chart.\n\nTable 2. Results\n\n图 3 我们提出的方法\n\n表 4 消融实验";
+  const normalized = normalizeTranslatedStructureLabels(input);
+  assert.match(normalized, /\*\*图 1：\*\* Convergence chart\./);
+  assert.match(normalized, /\*\*表 2：\*\* Results/);
+  assert.match(normalized, /\*\*图 3：\*\* 我们提出的方法/);
+  assert.match(normalized, /\*\*表 4：\*\* 消融实验/);
 });

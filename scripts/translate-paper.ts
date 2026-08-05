@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfBboxCropArgs, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, resolveInstitutionNames, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
 import { assertTranslationOwnership, claimTranslationJob, failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationJobMetadata, updateTranslationProgress } from "../src/lib/translation-job";
 
@@ -447,6 +447,16 @@ function isAuxiliaryPlotTable(html: string) {
   return coordinateHeader && (plotLabel || rowCount >= 8);
 }
 
+async function loadLayoutPictures(outputDirectory: string) {
+  try {
+    const raw = await fs.readFile(path.join(outputDirectory, "layout_ir.json"), "utf8");
+    const parsed = JSON.parse(raw) as { pictures?: Array<{ page: number; bbox: number[]; label?: string; page_width?: number | null; page_height?: number | null; asset?: string }> };
+    return (parsed.pictures || []).filter((picture) => Number.isInteger(picture.page) && Array.isArray(picture.bbox) && picture.bbox.length === 4);
+  } catch {
+    return [];
+  }
+}
+
 async function recoverFigureTablesFromPdf(markdown: string, pdfPath: string, outputDirectory: string) {
   const recovered: Array<{ id: string; source_table_id: string; page: number; asset: string }> = [...markdown.matchAll(/assets\/page-(\d+)-recovered-(\d+)\.(png|jpg|jpeg)/gi)].map((match) => ({
     id: `figure-recovered-${match[1]}-${match[2]}`,
@@ -456,6 +466,7 @@ async function recoverFigureTablesFromPdf(markdown: string, pdfPath: string, out
   }));
   const pages = markdown.split(/\n{2,}---\n{2,}/);
   const assetsDirectory = path.join(outputDirectory, "assets");
+  const layoutPictures = await loadLayoutPictures(outputDirectory);
   await fs.mkdir(assetsDirectory, { recursive: true });
   for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
     const pageNumber = pageIndex + 1;
@@ -504,15 +515,40 @@ async function recoverFigureTablesFromPdf(markdown: string, pdfPath: string, out
         const sizes = await Promise.all(candidates.map(async (file) => ({ file, size: (await fs.stat(file)).size })));
         best = sizes.sort((left, right) => right.size - left.size)[0].file;
       } else {
-        // Vector charts have no image XObject for pdfimages to extract. Render
-        // the source page instead of treating a valid PDF as a hard failure.
-        const renderedPrefix = path.join(outputDirectory, `.pdf-render-page-${pageNumber}`);
-        const renderedPage = `${renderedPrefix}.png`;
-        try {
-          await execFileAsync("pdftoppm", ["-f", String(pageNumber), "-l", String(pageNumber), "-png", "-r", "180", "-singlefile", pdfPath, renderedPrefix], { timeout: 120000, maxBuffer: 2 * 1024 * 1024 });
-          if (existsSync(renderedPage)) best = renderedPage;
-        } catch (error) {
-          console.warn(`  PDF 第 ${pageNumber} 页没有嵌入位图，页面渲染兜底失败：${networkErrorDetail(error)}`);
+        // Vector charts have no image XObject for pdfimages to extract. Only a
+        // one-to-one page/picture bbox from the layout IR is trusted for a
+        // crop; a whole-page render is never a valid figure resource, so any
+        // page without an unambiguous bbox stays an OCR table and fails closed
+        // into needs_review instead of publishing a wrong screenshot.
+        const pagePictures = layoutPictures.filter((picture) => picture.page === pageNumber);
+        const singlePicture = pagePictures.length === 1 && visualGroups.length === 1 ? pagePictures[0] : null;
+        if (singlePicture) {
+          const doclingAsset = singlePicture.asset
+            ? path.join(outputDirectory, String(singlePicture.asset).replace(/^\.?\//, ""))
+            : "";
+          if (doclingAsset && existsSync(doclingAsset)) {
+            best = doclingAsset;
+          }
+        }
+        if (singlePicture && !best) {
+          const renderedPrefix = path.join(outputDirectory, `.pdf-render-page-${pageNumber}`);
+          const renderedPage = `${renderedPrefix}.png`;
+          try {
+            const pageHeight = singlePicture.page_height || 0;
+            const crop = pdfBboxCropArgs([singlePicture.bbox[0], singlePicture.bbox[1], singlePicture.bbox[2], singlePicture.bbox[3]], pageHeight);
+            await execFileAsync("pdftoppm", [
+              "-f", String(pageNumber), "-l", String(pageNumber), "-png", "-r", "180",
+              "-x", String(crop.x), "-y", String(crop.y),
+              "-W", String(crop.width), "-H", String(crop.height),
+              "-singlefile", pdfPath, renderedPrefix,
+            ], { timeout: 120000, maxBuffer: 2 * 1024 * 1024 });
+            if (existsSync(renderedPage)) best = renderedPage;
+          } catch (error) {
+            console.warn(`  PDF 第 ${pageNumber} 页按 bbox 裁剪矢量图失败：${networkErrorDetail(error)}`);
+          }
+        }
+        if (!best) {
+          console.warn(`  PDF 第 ${pageNumber} 页有 ${visualGroups.length} 个图表对象但无唯一图片 bbox（layout pictures=${pagePictures.length}），保留 OCR 结构并进入 needs_review`);
         }
       }
       if (!best) {
@@ -1004,6 +1040,12 @@ async function main() {
   if (authorConflict?.conflicting) {
     validationIssues.push(`作者源冲突：PDF 独有 ${authorConflict.pdfOnly.join("、") || "无"}，数据库独有 ${authorConflict.dbOnly.join("、") || "无"}`);
   }
+  const aliasEntries = JSON.parse(await fs.readFile(path.join(process.cwd(), "src", "lib", "institution-aliases.json"), "utf8")) as { aliases: Array<{ original: string; canonical_en: string; name_zh: string }> };
+  const resolvedAffiliations = resolveInstitutionNames(extractPaperAffiliations(extracted.text, paper.title), aliasEntries.aliases);
+  const unknownAffiliations = resolvedAffiliations.filter((affiliation) => affiliation.confidence === 0);
+  if (unknownAffiliations.length) {
+    validationIssues.push(`未知机构待翻译：${unknownAffiliations.map((affiliation) => affiliation.text).join("、")}`);
+  }
   const finalMarkdown = stripStructuredBindingMarkers(validationMarkdown).replace(/\n{3,}/g, "\n\n").trim();
   const translationPath = path.join(outputDirectory, "translation_zh.md");
   const candidatePath = path.join(outputDirectory, "translation_candidate.md");
@@ -1019,7 +1061,7 @@ async function main() {
     title_zh: translatedTitle,
     authors: paper.authors || "",
     author_affiliations: extractPaperAuthorAffiliations(extracted.text),
-    affiliations: extractPaperAffiliations(extracted.text, paper.title),
+    affiliations: resolvedAffiliations,
     author_source_conflict: authorConflict?.conflicting || false,
     author_source_conflict_detail: authorConflict?.conflicting ? { pdf_only: authorConflict.pdfOnly, db_only: authorConflict.dbOnly } : null,
     source_url: extracted.url,

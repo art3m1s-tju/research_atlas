@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "aliases": [
+    { "original": "CASIA", "canonical_en": "Institute of Automation, Chinese Academy of Sciences", "name_zh": "中国科学院自动化研究所" },
+    { "original": "Li Auto", "canonical_en": "Li Auto", "name_zh": "理想汽车" },
+    { "original": "PCL", "canonical_en": "Peng Cheng Laboratory", "name_zh": "鹏城实验室" },
+    { "original": "NUS", "canonical_en": "National University of Singapore", "name_zh": "新加坡国立大学" },
+    { "original": "Tsinghua", "canonical_en": "Tsinghua University", "name_zh": "清华大学" },
+    { "original": "CAS", "canonical_en": "Chinese Academy of Sciences", "name_zh": "中国科学院" },
+    { "original": "MIT", "canonical_en": "Massachusetts Institute of Technology", "name_zh": "麻省理工学院" },
+    { "original": "Stanford University", "canonical_en": "Stanford University", "name_zh": "斯坦福大学" }
+  ]
+}

@@ -24,7 +24,7 @@ if [[ ! -f .env.local ]]; then
 fi
 
 LOCAL_PORT="$(awk -F= '$1 == "ATLAS_PORT" { gsub(/[[:space:]]/, "", $2); print $2; exit }' .env.local 2>/dev/null || true)"
-PORT="${ATLAS_PORT:-${LOCAL_PORT:-3210}}"
+PORT="${ATLAS_PORT:-${LOCAL_PORT:-43117}}"
 URL="http://localhost:${PORT}"
 echo "访问地址: $URL"
 

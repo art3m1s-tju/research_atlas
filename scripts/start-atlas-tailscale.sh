@@ -23,7 +23,7 @@ if [[ ! -d node_modules ]]; then npm install; fi
 if [[ ! -f .env.local ]]; then cp .env.example .env.local; fi
 
 LOCAL_PORT="$(awk -F= '$1 == "ATLAS_PORT" { gsub(/[[:space:]]/, "", $2); print $2; exit }' .env.local 2>/dev/null || true)"
-PORT="${ATLAS_PORT:-${LOCAL_PORT:-3210}}"
+PORT="${ATLAS_PORT:-${LOCAL_PORT:-43117}}"
 LOCAL_URL="http://127.0.0.1:${PORT}"
 
 mkdir -p data

@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "predev": "node scripts/ensure-single-instance.mjs",
+    "dev": "next dev --port 43117",
     "build": "next build",
-    "start": "next start",
+    "prestart": "node scripts/ensure-single-instance.mjs",
+    "start": "next start --port 43117",
     "start:tailscale": "bash scripts/start-atlas-tailscale.sh",
     "lint": "next lint",
     "db:seed": "tsx scripts/seed.ts",

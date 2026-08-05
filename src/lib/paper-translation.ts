@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v16-source-ir";
+export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v17-source-ir";
 export const TRANSLATION_PROMPT_VERSION = "academic-markdown-v10-source-ir";
 
 export type SourceQualityIssue = {
@@ -284,6 +284,22 @@ export function translationDirectory(paperId: number) {
   return `data/translations/${paperId}`;
 }
 
+/**
+ * Convert a PDF bbox (points, y-up as used by Docling) into pdftoppm crop
+ * arguments at the given DPI (origin top-left, pixels).
+ */
+export function pdfBboxCropArgs(bbox: [number, number, number, number], pageHeight: number, dpi = 180) {
+  const [left, top, right, bottom] = bbox;
+  const scale = dpi / 72;
+  const yFromTop = top > bottom && pageHeight > 0 ? pageHeight - top : top;
+  return {
+    x: Math.round(Math.min(left, right) * scale),
+    y: Math.round(yFromTop * scale),
+    width: Math.round(Math.abs(right - left) * scale),
+    height: Math.round(Math.abs(top - bottom) * scale),
+  };
+}
+
 function looksLikePdfUrl(value: string) {
   return /arxiv\.org\/pdf|\.pdf(?:[?#]|$)|download/i.test(value);
 }
@@ -474,6 +490,29 @@ export function extractPaperAffiliations(markdown: string, title: string): Paper
     }
   }
   return affiliations;
+}
+
+export type InstitutionAlias = { original: string; canonical_en: string; name_zh: string };
+export type ResolvedAffiliation = PaperAffiliation & InstitutionAlias & { confidence: number };
+
+/**
+ * Resolve extracted affiliation names through the global institution alias
+ * table. Unknown institutions keep confidence 0 (and must go to review for a
+ * one-off translation + cache) instead of being silently published.
+ */
+export function resolveInstitutionNames(affiliations: PaperAffiliation[], aliases: InstitutionAlias[]): ResolvedAffiliation[] {
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+  const byNormalized = new Map(aliases.map((alias) => [normalize(alias.original), alias]));
+  return affiliations.map((affiliation) => {
+    const alias = byNormalized.get(normalize(affiliation.text));
+    return {
+      ...affiliation,
+      original: affiliation.text,
+      canonical_en: alias?.canonical_en ?? affiliation.text,
+      name_zh: alias?.name_zh ?? "",
+      confidence: alias ? 1 : 0,
+    };
+  });
 }
 
 /** Normalise an author name so PDF and database sources can be compared. */
@@ -1666,7 +1705,7 @@ export function normalizeTranslatedStructureLabels(markdown: string, captionsOnl
       return `${heading[1]}${heading[2]} ${normalizedHeading}`;
     }
 
-    const caption = rawLine.match(new RegExp(`^(\\s*)(<!--\\s*ATLAS_BIND_[^>]+-->)?\\s*(?:\\*\\*)?(Figure|Fig\\.?|Table|图|表)\\s*(${CAPTION_NUMBER_PATTERN})\\s*[:：-]\\s*(?:\\*\\*)?\\s*(.*)$`, "i"));
+    const caption = rawLine.match(new RegExp(`^(\\s*)(<!--\\s*ATLAS_BIND_[^>]+-->)?\\s*(?:\\*\\*)?(Figure|Fig\\.?|Table|图|表)\\s*(${CAPTION_NUMBER_PATTERN})\\s*(?:[.:：-]\\s*)?(?:\\*\\*)?\\s*(.*)$`, "i"));
     if (!caption || !captionScope) {
       if (startsBinding) inBinding = true;
       if (endsBinding) inBinding = false;

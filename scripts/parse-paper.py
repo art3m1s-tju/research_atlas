@@ -70,6 +70,35 @@ def main() -> int:
         for path in sorted(assets_dir.rglob("*"))
         if path.is_file()
     ]
+
+    layout_items = []
+    page_sizes = {
+        page.page_no: (float(page.size.width), float(page.size.height))
+        for page in document.pages
+        if getattr(page, "page_no", None) is not None and getattr(page, "size", None) is not None
+    }
+    for picture in document.pictures:
+        for prov in picture.prov or []:
+            bbox = getattr(prov, "bbox", None)
+            page_no = getattr(prov, "page_no", None)
+            if bbox is None or page_no is None:
+                continue
+            label = getattr(picture, "label", None)
+            page_width, page_height = page_sizes.get(int(page_no), (None, None))
+            image = getattr(picture, "image", None)
+            asset = getattr(image, "uri", None) or ""
+            layout_items.append({
+                "kind": "picture",
+                "page": int(page_no),
+                "bbox": [float(bbox.l), float(bbox.t), float(bbox.r), float(bbox.b)],
+                "label": getattr(label, "value", str(label or "")),
+                "page_width": page_width,
+                "page_height": page_height,
+                "asset": asset,
+            })
+    layout_path = output_dir / "layout_ir.json"
+    layout_path.write_text(json.dumps({"version": 1, "pictures": layout_items}, ensure_ascii=False, indent=2), encoding="utf-8")
+
     manifest = {
         "parser": "docling",
         "parser_version": getattr(__import__("docling"), "__version__", "unknown"),
@@ -77,6 +106,7 @@ def main() -> int:
         "source_pdf": str(Path(args.pdf).resolve()),
         "markdown": str(markdown_path.relative_to(output_dir)),
         "assets": assets,
+        "layout_ir": str(layout_path.relative_to(output_dir)),
     }
     (output_dir / "document.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"

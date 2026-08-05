@@ -15,6 +15,11 @@
   --radius-card: 20px;
   --radius-chip: 10px;
   --radius-button: 12px;
+  --paper-level-1-size: clamp(2.6rem, 4.8vw, 3.8rem);
+  --paper-body-size: 1.22rem;
+  --paper-caption-size: 1.05rem;
+  --paper-header-size: 1.08rem;
+  --paper-cell-size: 1.02rem;
 }
 
 @layer base {
@@ -49,8 +54,8 @@
 
 .translation-prose {
   color: #1f2937;
-  font-size: 1.16rem;
-  line-height: 1.9;
+  font-size: var(--paper-body-size);
+  line-height: 1.85;
   overflow-wrap: anywhere;
 }
 
@@ -64,8 +69,9 @@
   margin: 2rem 0 0.75rem;
 }
 
-.translation-prose h1 { font-size: 2.2rem; }
-.translation-prose h2 { font-size: 1.9rem; border-bottom: 1px solid #dbe3ef; padding-bottom: 0.55rem; margin-top: 2.8rem; }
+.translation-prose h1,
+.translation-prose h2 { font-size: var(--paper-level-1-size); }
+.translation-prose h2 { border-bottom: 1px solid #dbe3ef; padding-bottom: 0.55rem; margin-top: 2.8rem; }
 .translation-prose h3 { font-size: 1.55rem; color: #1e3a5f; margin-top: 2rem; }
 .translation-prose h4 { font-size: 1.28rem; color: #475569; margin-top: 1.5rem; }
 .translation-prose p { margin: 0.9rem 0; }
@@ -74,7 +80,7 @@
   margin: 0.45rem auto 1.6rem;
   max-width: 90%;
   color: #526174;
-  font-size: 0.98rem;
+  font-size: var(--paper-caption-size);
   line-height: 1.6;
   text-align: center;
 }
@@ -91,11 +97,11 @@
 .translation-prose .katex { overflow-wrap: normal; font-size: 1.05em; }
 .translation-prose .katex-display { display: block; overflow-x: auto; overflow-y: hidden; padding: 0.7rem 0; margin: 1.2rem auto; text-align: center; }
 .translation-prose .paper-table-wrap { width: 100%; overflow-x: auto; margin: 1.5rem 0 0.35rem; }
-.translation-prose table { width: max-content; min-width: 72%; border-collapse: collapse; margin: 0 auto; font-size: 1.04rem; }
+.translation-prose table { width: max-content; min-width: 72%; border-collapse: collapse; margin: 0 auto; font-size: var(--paper-cell-size); }
 .translation-prose th,
 .translation-prose td { border: 1px solid #d1d5db; padding: 0.62rem 0.82rem; min-width: 7rem; vertical-align: middle; }
-.translation-prose th { background: #f3f4f6; font-weight: 750; text-align: center; }
-.translation-prose td { text-align: left; }
+.translation-prose th { background: #f3f4f6; font-size: var(--paper-header-size); font-weight: 750; text-align: center; }
+.translation-prose td { font-size: var(--paper-cell-size); text-align: left; }
 .translation-prose .paper-inline-math { white-space: nowrap; }
 .translation-prose .paper-formula-fallback { color: inherit; background: #fff7ed; border-radius: 0.25rem; padding: 0.08rem 0.25rem; }
 .translation-prose img {
@@ -111,7 +117,7 @@
 }
 .translation-prose .paper-image-button { display: block; width: 100%; padding: 0; border: 0; background: transparent; }
 
-.paper-title { text-align: center; font-size: clamp(2.25rem, 4.5vw, 3.45rem); line-height: 1.16; }
+.paper-title { text-align: center; font-size: var(--paper-level-1-size); line-height: 1.16; }
 .paper-meta { text-align: center; }
 .paper-authors { margin: 0; color: #334155; font-size: 1.12rem; line-height: 1.75; }
 .paper-author sup { margin-left: 0.08rem; color: #475569; font-size: 0.68em; vertical-align: super; }
