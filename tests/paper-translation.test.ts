@@ -6,6 +6,7 @@ import {
   extractPaperAuthorAffiliations,
   annotateStructuredBindings,
   applySemanticBindingDecisions,
+  buildDocumentIR,
   buildStructuredBindingManifest,
   compareAuthorSources,
   findUnknownProtectedTokens,
@@ -210,6 +211,33 @@ test("structured binding validation rejects assets swapped between binding IDs",
   ].join("\n\n");
   const translated = source.replace("assets/a.png", "assets/TEMP.png").replace("assets/b.png", "assets/a.png").replace("assets/TEMP.png", "assets/b.png");
   assert.ok(validateStructuredBindings(source, translated).some((issue) => issue.includes("图片资源身份")));
+});
+
+test("document IR keeps parser page, bbox, asset identity, and caption relation", () => {
+  const source = "## Results\n\n![Image](assets/figure-1.png)\n\nFigure 1: Architecture";
+  const manifest = buildStructuredBindingManifest(source);
+  const ir = buildDocumentIR(source, manifest, {
+    version: 2,
+    pages: [{ page: 1, width: 612, height: 792 }],
+    blocks: [{
+      id: "picture-1#1",
+      source_ref: "picture-1",
+      kind: "picture",
+      page: 1,
+      order: 3,
+      bbox: [72, 180, 540, 420],
+      coord_origin: "BOTTOMLEFT",
+      asset: "assets/figure-1.png",
+      page_width: 612,
+      page_height: 792,
+    }],
+  });
+  assert.equal(ir.version, 2);
+  assert.deepEqual(ir.pages[0], { page: 1, width: 612, height: 792, rotation: null });
+  const figure = ir.blocks.find((block) => block.type === "figure");
+  assert.deepEqual(figure && "bbox" in figure ? figure.bbox : undefined, [72, 180, 540, 420]);
+  assert.equal(figure && "assetId" in figure ? figure.assetId : undefined, "asset:assets/figure-1.png");
+  assert.equal(ir.relations[0]?.type, "caption_of");
 });
 
 test("pdfLinksFromLandingHtml resolves OJS citation metadata and download links", () => {

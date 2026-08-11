@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfBboxCropArgs, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, resolveInstitutionNames, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfBboxCropArgs, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, resolveInstitutionNames, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown, type DocumentLayoutInput } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
 import { assertTranslationOwnership, claimTranslationJob, failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationJobMetadata, updateTranslationProgress } from "../src/lib/translation-job";
 
@@ -469,6 +469,16 @@ async function loadLayoutPictures(outputDirectory: string) {
     return (parsed.pictures || []).filter((picture) => Number.isInteger(picture.page) && Array.isArray(picture.bbox) && picture.bbox.length === 4);
   } catch {
     return [];
+  }
+}
+
+async function loadDocumentLayout(outputDirectory: string, manifest: Record<string, unknown> | undefined): Promise<DocumentLayoutInput | undefined> {
+  const relativePath = typeof manifest?.layout_ir === "string" ? manifest.layout_ir : "";
+  if (!relativePath) return undefined;
+  try {
+    return JSON.parse(await fs.readFile(path.join(outputDirectory, relativePath), "utf8")) as DocumentLayoutInput;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1008,7 +1018,8 @@ async function main() {
     throw new Error(`STRUCTURE_QUALITY:图表绑定在重新排版后仍有 ${resolvedManifest.ambiguous.length} 个歧义对象，未发布译文`);
   }
   const source = annotateStructuredBindings(boundSource, resolvedManifest);
-  const documentIR = buildDocumentIR(boundSource, resolvedManifest);
+  const documentLayout = await loadDocumentLayout(outputDirectory, extractedManifest);
+  const documentIR = buildDocumentIR(boundSource, resolvedManifest, documentLayout);
   const chunkChars = Math.max(3000, Math.min(9000, Number(process.env.TRANSLATION_CHUNK_CHARS || 6000)));
   const chunks = splitTranslationChunks(source, chunkChars);
   const chunkDirectory = path.join(outputDirectory, "chunks");

@@ -632,27 +632,148 @@ export type StructuredBindingManifest = {
   ambiguous: string[];
 };
 
+export type DocumentBBox = [number, number, number, number];
+export type DocumentPage = {
+  page: number;
+  width?: number | null;
+  height?: number | null;
+  rotation?: number | null;
+};
+export type DocumentLayoutBlock = {
+  id: string;
+  sourceRef?: string;
+  kind: string;
+  page: number;
+  order?: number;
+  bbox?: DocumentBBox;
+  coordOrigin?: string;
+  label?: string;
+  text?: string;
+  asset?: string;
+  pageWidth?: number | null;
+  pageHeight?: number | null;
+};
+export type DocumentLayoutInput = {
+  version?: number;
+  pages?: Array<{ page: number; width?: number | null; height?: number | null; rotation?: number | null }>;
+  blocks?: Array<{
+    id?: string;
+    source_ref?: string;
+    kind?: string;
+    page?: number;
+    order?: number;
+    bbox?: number[];
+    coord_origin?: string;
+    label?: string;
+    text?: string;
+    asset?: string;
+    page_width?: number | null;
+    page_height?: number | null;
+  }>;
+  pictures?: Array<{
+    id?: string;
+    source_ref?: string;
+    kind?: string;
+    page?: number;
+    order?: number;
+    bbox?: number[];
+    coord_origin?: string;
+    label?: string;
+    text?: string;
+    asset?: string;
+    page_width?: number | null;
+    page_height?: number | null;
+  }>;
+};
+
+type DocumentBlockMeta = {
+  page?: number;
+  order?: number;
+  bbox?: DocumentBBox;
+  sourceRef?: string;
+  assetId?: string;
+};
+
 export type DocumentBlock =
-  | { id: string; type: "heading"; depth: number; text: string }
-  | { id: string; type: "paragraph"; text: string }
-  | { id: string; type: "formula"; text: string }
-  | { id: string; type: "figure" | "native_table" | "table_image"; objectId: string; asset?: string }
-  | { id: string; type: "caption"; captionId: string; kind: CaptionKind; number: number; text: string };
+  | (DocumentBlockMeta & { id: string; type: "heading"; depth: number; text: string })
+  | (DocumentBlockMeta & { id: string; type: "paragraph"; text: string })
+  | (DocumentBlockMeta & { id: string; type: "formula"; text: string })
+  | (DocumentBlockMeta & { id: string; type: "figure" | "native_table" | "table_image"; objectId: string; asset?: string })
+  | (DocumentBlockMeta & { id: string; type: "caption"; captionId: string; kind: CaptionKind; number: number; text: string });
+
+export type DocumentRelation = {
+  type: "caption_of" | "continues" | "part_of";
+  source: string;
+  target: string;
+  confidence?: number;
+};
 
 export type DocumentIR = {
-  version: 1;
+  version: 2;
+  pages: DocumentPage[];
   blocks: DocumentBlock[];
+  layout: DocumentLayoutBlock[];
+  relations: DocumentRelation[];
   bindings: StructuredBindingManifest;
 };
 
-/** Build a lightweight intermediate representation used for validation and debugging. */
-export function buildDocumentIR(markdown: string, bindings: StructuredBindingManifest): DocumentIR {
+function normalizeLayoutInput(layout?: DocumentLayoutInput) {
+  if (!layout) return { pages: [] as DocumentPage[], blocks: [] as DocumentLayoutBlock[] };
+  const pages = (layout.pages || []).flatMap((page) => {
+    if (typeof page.page !== "number" || !Number.isInteger(page.page)) return [];
+    return [{
+      page: page.page,
+      width: page.width ?? null,
+      height: page.height ?? null,
+      rotation: page.rotation ?? null,
+    }];
+  });
+  const rawBlocks = layout.blocks?.length ? layout.blocks : layout.pictures || [];
+  const blocks = rawBlocks.flatMap((block, index) => {
+    if (typeof block.page !== "number" || !Number.isInteger(block.page) || !block.kind) return [];
+    const bbox = Array.isArray(block.bbox) && block.bbox.length === 4 && block.bbox.every(Number.isFinite)
+      ? block.bbox as DocumentBBox
+      : undefined;
+    return [{
+      id: String(block.id || `${block.kind}-${index + 1}`),
+      sourceRef: block.source_ref,
+      kind: String(block.kind),
+      page: block.page,
+      order: block.order ?? index,
+      bbox,
+      coordOrigin: block.coord_origin,
+      label: block.label,
+      text: block.text,
+      asset: block.asset,
+      pageWidth: block.page_width ?? null,
+      pageHeight: block.page_height ?? null,
+    } satisfies DocumentLayoutBlock];
+  });
+  return { pages, blocks };
+}
+
+/** Build the canonical document representation used by validation and readers. */
+export function buildDocumentIR(markdown: string, bindings: StructuredBindingManifest, layout?: DocumentLayoutInput): DocumentIR {
+  const normalizedLayout = normalizeLayoutInput(layout);
+  const layoutByAsset = new Map(normalizedLayout.blocks.filter((block) => block.asset).map((block) => [block.asset, block]));
+  const layoutForObject = (object: StructuredBindingObject) => object.asset ? layoutByAsset.get(object.asset) : undefined;
   const blocks: DocumentBlock[] = [];
   for (const match of markdown.matchAll(/^(#{1,6})\s+(.+)$/gm)) {
     blocks.push({ id: `heading-${blocks.length + 1}`, type: "heading", depth: match[1].length, text: match[2].trim() });
   }
   for (const object of bindings.objects) {
-    blocks.push({ id: object.id, type: object.kind === "table" ? "native_table" : object.kind === "table_image" ? "table_image" : "figure", objectId: object.id, asset: object.asset });
+    const layoutBlock = layoutForObject(object);
+    blocks.push({
+      id: object.id,
+      type: object.kind === "table" ? "native_table" : object.kind === "table_image" ? "table_image" : "figure",
+      objectId: object.id,
+      asset: object.asset,
+      page: layoutBlock?.page,
+      order: layoutBlock?.order,
+      bbox: layoutBlock?.bbox,
+      sourceRef: layoutBlock?.sourceRef,
+      assetId: object.asset ? `asset:${object.asset}` : undefined,
+    });
   }
   for (const caption of bindings.captions) {
     blocks.push({ id: caption.id, type: "caption", captionId: caption.id, kind: caption.kind, number: caption.number, text: caption.text });
@@ -667,7 +788,13 @@ export function buildDocumentIR(markdown: string, bindings: StructuredBindingMan
     };
     return position(left) - position(right);
   });
-  return { version: 1, blocks, bindings };
+  const relations = bindings.objects.flatMap((object) => object.captionId ? [{
+    type: "caption_of" as const,
+    source: object.captionId,
+    target: object.id,
+    confidence: object.ambiguous ? 0 : 1,
+  }] : []);
+  return { version: 2, pages: normalizedLayout.pages, blocks, layout: normalizedLayout.blocks, relations, bindings };
 }
 
 function structuredObjectMatches(markdown: string) {
