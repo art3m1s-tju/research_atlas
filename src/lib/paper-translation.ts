@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v17-source-ir";
+export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v18-identity-gates";
 export const TRANSLATION_PROMPT_VERSION = "academic-markdown-v10-source-ir";
 
 export type SourceQualityIssue = {
@@ -256,14 +256,18 @@ export function assessTextExtractionCompleteness(
 type TranslationRuntime = {
   model?: string;
   parser?: string;
+  parserVersion?: string;
   formulaEnabled?: string;
+  ocrEnabled?: string;
+  imageScale?: string;
+  semanticModel?: string;
   glossary?: string;
   formatVersion?: string;
   promptVersion?: string;
 };
 
 export function translationSourceHash(
-  paper: { title: string; abstract?: string | null; pdf_url?: string | null; doi?: string | null },
+  paper: { title: string; abstract?: string | null; pdf_url?: string | null; doi?: string | null; arxiv_id?: string | null },
   runtime: TranslationRuntime = {},
 ) {
   return createHash("sha256").update(JSON.stringify({
@@ -273,9 +277,14 @@ export function translationSourceHash(
     abstract: paper.abstract || "",
     pdfUrl: paper.pdf_url || "",
     doi: paper.doi || "",
+    arxivId: paper.arxiv_id || "",
     model: runtime.model || "",
     parser: runtime.parser || "auto",
+    parserVersion: runtime.parserVersion || "",
     formulaEnabled: runtime.formulaEnabled || "1",
+    ocrEnabled: runtime.ocrEnabled || "0",
+    imageScale: runtime.imageScale || "2",
+    semanticModel: runtime.semanticModel || "",
     glossary: runtime.glossary || "",
   })).digest("hex");
 }
@@ -827,7 +836,19 @@ export function applySemanticBindingDecisions(manifest: StructuredBindingManifes
       const expectedKind = object.kind === "figure" ? "figure" : "table";
       return count + (orderedCaptions[index].kind === expectedKind ? 0 : 1);
     }, 0);
-    if (mismatchCount <= Math.max(2, Math.floor(orderedObjects.length * 0.15))) {
+    const directionValid = orderedObjects.every((object, index) => {
+      const caption = orderedCaptions[index];
+      if (!caption) return false;
+      if (object.kind === "table_image") return true;
+      return object.kind === "table" ? caption.end <= object.start : caption.start >= object.end;
+    });
+    const sequenceValid = (["figure", "table"] as const).every((kind) => {
+      const numbers = orderedObjects
+        .map((object, index) => (object.kind === "figure" ? "figure" : "table") === kind ? orderedCaptions[index]?.number : undefined)
+        .filter((number): number is number => Number.isFinite(number));
+      return numbers.length === 0 || new Set(numbers).size === numbers.length && Math.max(...numbers) === numbers.length;
+    });
+    if (mismatchCount === 0 && directionValid && sequenceValid) {
       orderedObjects.forEach((object, index) => {
         const caption = orderedCaptions[index];
         object.captionId = caption.id;
@@ -847,12 +868,12 @@ export function applySemanticBindingDecisions(manifest: StructuredBindingManifes
     const decision = byId.get(object.id)!;
     const requestedCaption = decision.caption_id && manifest.captions.find((caption) => caption.id === decision.caption_id);
     const expectedKind = object.kind === "table" || object.kind === "table_image" ? "table" : "figure";
-    const shouldBeBefore = object.kind === "table";
+    const shouldBeBefore = object.kind === "table" || object.kind === "table_image";
     const candidate = requestedCaption && !usedCaptions.has(requestedCaption.id)
       ? requestedCaption
       : manifest.captions
         .filter((caption) => caption.kind === expectedKind && !usedCaptions.has(caption.id))
-        .map((caption) => ({ caption, distance: caption.start >= object.end ? caption.start - object.end : object.start - caption.end, directional: shouldBeBefore ? caption.end <= object.start : caption.start >= object.end }))
+        .map((caption) => ({ caption, distance: caption.start >= object.end ? caption.start - object.end : object.start - caption.end, directional: object.kind === "table_image" || (shouldBeBefore ? caption.end <= object.start : caption.start >= object.end) }))
         .filter((item) => item.directional && item.distance <= 4000)
         .sort((left, right) => left.distance - right.distance)[0]?.caption;
     if (candidate) {
@@ -881,7 +902,7 @@ export function normalizeBoundCaptionPlacement(markdown: string, manifest: Struc
     const caption = manifest.captions.find((item) => item.id === object.captionId);
     if (!caption) continue;
     const captionBefore = caption.start < object.start;
-    const shouldBeBefore = object.kind === "table";
+    const shouldBeBefore = object.kind === "table" || object.kind === "table_image";
     if (captionBefore === shouldBeBefore) continue;
     const captionText = result.slice(caption.start, caption.end).trim();
     const objectText = result.slice(object.start, object.end).trim();
@@ -906,8 +927,13 @@ export function annotateStructuredBindings(markdown: string, manifest: Structure
     const candidateEnd = Math.max(object.end, caption?.end ?? object.end);
     const otherObjects = structuredObjectMatches(clean).filter((item) => item.start >= spanStart && item.end <= candidateEnd && !(item.start === object.start && item.end === object.end));
     const otherCaptions = structuredCaptionMatches(clean).filter((item) => item.start >= spanStart && item.end <= candidateEnd && item.id !== object.captionId);
-    const spanEnd = otherObjects.length || otherCaptions.length ? object.end : candidateEnd;
-    if (ranges.some((range) => spanStart < range.end && spanEnd > range.start)) continue;
+    if (otherObjects.length || otherCaptions.length) {
+      throw new Error(`图表绑定跨度包含其他对象或题注：${object.id}`);
+    }
+    const spanEnd = candidateEnd;
+    if (ranges.some((range) => spanStart < range.end && spanEnd > range.start)) {
+      throw new Error(`图表绑定跨度重叠：${object.id}`);
+    }
     ranges.push({ start: spanStart, end: spanEnd });
     const marker = `<!--ATLAS_BIND_${object.id}-->`;
     const endMarker = `<!--ATLAS_BIND_END_${object.id}-->`;
@@ -949,6 +975,10 @@ export function validateStructuredBindings(source: string, translated: string) {
     const translatedObjects = structuredObjectMatches(translatedWrapper.text);
     if (sourceObjects.length !== 1 || translatedObjects.length !== 1 || sourceObjects[0].kind !== translatedObjects[0].kind) {
       issues.push(`图表绑定块 ${sourceWrapper.id} 的对象类型或数量不一致`);
+    } else if (sourceObjects[0].kind === "figure" && sourceObjects[0].asset !== translatedObjects[0].asset) {
+      issues.push(`图表绑定块 ${sourceWrapper.id} 的图片资源身份不一致`);
+    } else if (sourceObjects[0].kind === "table" && htmlTableSignature(sourceObjects[0].text) !== htmlTableSignature(translatedObjects[0].text)) {
+      issues.push(`图表绑定块 ${sourceWrapper.id} 的表格结构不一致`);
     }
     const sourceCaptions = structuredCaptionMatches(sourceWrapper.text);
     const translatedCaptions = structuredCaptionMatches(translatedWrapper.text);
@@ -1025,10 +1055,11 @@ export function numberReferenceSection(markdown: string) {
   const endIndex = lines.findIndex((line, index) => index > headingIndex && /^#{1,6}\s+/.test(line));
   const sectionEnd = endIndex < 0 ? lines.length : endIndex;
   const sectionText = lines.slice(headingIndex + 1, sectionEnd).join("\n").trim();
-  const existingMarkers = [...sectionText.matchAll(/(?:^|\s)(\d{1,3})\.\s+(?=[A-Z\u4e00-\u9fff])/g)];
+  const existingMarkers = [...sectionText.matchAll(/(?:^|\s)(?:\[(\d+)\]|(\d+)\.)\s+(?=[A-Z\u4e00-\u9fff])/g)];
   if (existingMarkers.length >= 2) {
-    const entries = existingMarkers.map((marker, index) => sectionText.slice(marker.index! + (marker[0].startsWith(" ") ? 1 : 0), existingMarkers[index + 1]?.index ?? sectionText.length).trim()).filter((entry) => !/^\d+\.\s*补充材料\s*$/u.test(entry));
-    return [...lines.slice(0, headingIndex + 1), "", ...entries.map((entry, index) => `${index + 1}. ${entry.replace(/^\d+\.\s*/, "")}`), ...lines.slice(sectionEnd)].join("\n").replace(/\n{3,}/g, "\n\n");
+    // Preserve publisher numbering. Renumbering here would leave in-text
+    // citations such as [293] pointing at the wrong bibliography entry.
+    return markdown;
   }
   const blocks: string[][] = [];
   let current: string[] = [];
@@ -1223,6 +1254,21 @@ function markdownImages(markdown: string) {
   ].sort();
 }
 
+/**
+ * Academic literals must survive translation exactly. Math is checked
+ * separately, while URLs, DOIs, percentages, years, and metric values stay
+ * in this conservative list so a truncated or hallucinated chunk fails closed.
+ */
+function academicLiteralTokens(markdown: string) {
+  const urlPattern = /https?:\/\/[^\s)>'"]+/gi;
+  const body = markdown.replace(/^\s*>\s*原文：[^\r\n]*$/gmu, " ");
+  const urls = [...body.matchAll(urlPattern)].map((match) => match[0].replace(/[.,;:]+$/, ""));
+  const withoutUrls = body.replace(urlPattern, " ");
+  const withoutMath = withoutUrls.replace(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|\\\[[\s\S]*?\\\]|\\\([^\n]+\\\)|(?<!\\)\$(?!\$)[^$\n]+(?<!\\)\$(?!\$)/g, " ");
+  const numbers = [...withoutMath.matchAll(/(?<![\p{L}\w])\d+(?:\.\d+)?%?(?![\p{L}\w])/gu)].map((match) => match[0]);
+  return [...urls, ...numbers].sort();
+}
+
 function mathExpressions(markdown: string) {
   return [...markdown.matchAll(/(?<!\\)\$\$[\s\S]*?(?<!\\)\$\$|\\\[[\s\S]*?\\\]|\\\([^\n]+\\\)|(?<!\\)\$(?!\$)[^$\n]+(?<!\\)\$(?!\$)/g)].map((match) => canonicalMathExpression(match[0]));
 }
@@ -1354,6 +1400,7 @@ export function validateTranslatedFragment(source: string, translated: string) {
   const translatedTables = tableRepresentations(translated);
   if (sourceTables.length !== translatedTables.length) issues.push("表格数量不一致");
   if (sourceTables.length === translatedTables.length && sourceTables.some((table, index) => table.kind !== translatedTables[index].kind || (table.kind === "html" && htmlTableSignature(table.text) !== htmlTableSignature(translatedTables[index].text)))) issues.push("表格结构不一致");
+  if (JSON.stringify(academicLiteralTokens(source)) !== JSON.stringify(academicLiteralTokens(translated))) issues.push("数字、URL 或 DOI 等学术字面量不一致");
   return issues;
 }
 
@@ -1441,6 +1488,7 @@ export function validateTranslatedMarkdown(source: string, translated: string, e
   if (sourceHeadings.length !== bodyHeadings.length) issues.push(`章节数量不一致：原文 ${sourceHeadings.length}，译文 ${bodyHeadings.length}`);
   if (sourceHeadings.length === bodyHeadings.length && sourceHeadings.some((heading, index) => heading.depth !== bodyHeadings[index]?.depth)) issues.push("章节层级与原文不一致");
   if (JSON.stringify(sourceImages) !== JSON.stringify(translatedImages)) issues.push(`图片引用不一致：原文 ${sourceImages.length}，译文 ${translatedImages.length}`);
+  if (JSON.stringify(academicLiteralTokens(source)) !== JSON.stringify(academicLiteralTokens(translated))) issues.push("数字、URL 或 DOI 等学术字面量不一致");
   const mathComparison = mathContentEquivalent(source, translated);
   if (mathComparison.missing.length || mathComparison.extras.length) issues.push(`公式内容或数量不一致：原文 ${sourceMath.length}，译文 ${translatedMath.length}`);
   if (JSON.stringify(sourceBlockMath) !== JSON.stringify(translatedBlockMath)) issues.push(`块级公式内容或顺序不一致：原文 ${sourceBlockMath.length}，译文 ${translatedBlockMath.length}`);

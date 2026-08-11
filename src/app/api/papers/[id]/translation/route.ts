@@ -16,7 +16,11 @@ function translationRuntime() {
   return {
     model: process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
     parser: process.env.TRANSLATION_PARSER || "auto",
+    parserVersion: process.env.TRANSLATION_PARSER_VERSION || "",
     formulaEnabled: process.env.TRANSLATION_ENABLE_FORMULA || "1",
+    ocrEnabled: process.env.TRANSLATION_ENABLE_OCR || "0",
+    imageScale: process.env.TRANSLATION_IMAGE_SCALE || "2",
+    semanticModel: process.env.DEEPSEEK_SEMANTIC_MODEL || "",
     glossary: existsSync(terminologyPath) ? readFileSync(terminologyPath, "utf8") : "# 术语表\n\n以论文原文为准。\n",
   };
 }
@@ -31,6 +35,11 @@ function rewriteAssetReferences(markdown: string, id: string) {
   return markdown
     .replace(/(!\[[^\]]*\]\()((?:\.\/)?assets\/[^)\s]+)(\))/g, (_match, prefix: string, asset: string, suffix: string) => `${prefix}${rewrite(asset)}${suffix}`)
     .replace(/(<img\b[^>]*\bsrc=["'])((?:\.\/)?assets\/[^"']+)(["'])/gi, (_match, prefix: string, asset: string, suffix: string) => `${prefix}${rewrite(asset)}${suffix}`);
+}
+
+function hasTranslationArtifacts(outputDir: string) {
+  return ["translation_zh.md", "translation_meta.json", "structure_manifest.json", "document.json"]
+    .every((file) => existsSync(path.join(process.cwd(), outputDir, file)));
 }
 
 function contentType(filePath: string) {
@@ -116,7 +125,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     if (!candidates.length) return NextResponse.json({ error: "这篇论文没有可访问的 PDF，暂时无法生成全文翻译。" }, { status: 400 });
     const sourceHash = translationSourceHash(paper, translationRuntime());
     const existing = db.prepare("SELECT status, source_hash, error, progress_message, lease_expires_at FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
-    if (existing?.status === "completed" && existing.source_hash === sourceHash && !payload.force) {
+    if (existing?.status === "completed" && existing.source_hash === sourceHash && !payload.force && hasTranslationArtifacts(existing.output_dir || translationDirectory(paper.id))) {
       return NextResponse.json({ success: true, cached: true, status: existing.status, message: "已存在同版本中文翻译。" });
     }
     const cacheInvalidated = existing?.status === "pending" && String(existing?.progress_message || "").startsWith("旧缓存已失效");

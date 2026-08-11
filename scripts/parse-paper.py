@@ -65,6 +65,20 @@ def main() -> int:
     markdown = markdown.replace(f"{assets_dir}/", "assets/")
     markdown_path.write_text(markdown, encoding="utf-8")
 
+    # Markdown is a reader export, not the source of structural truth. Keep a
+    # lossless Docling document beside it so later stages can use provenance,
+    # merged-cell structure, and reading order without guessing from strings.
+    docling_json_path = output_dir / "docling_document.json"
+    docling_assets_dir = output_dir / "docling_assets"
+    try:
+        document.save_as_json(
+            docling_json_path,
+            artifacts_dir=docling_assets_dir,
+            image_mode=ImageRefMode.REFERENCED,
+        )
+    except Exception as error:
+        print(f"Docling 原始 JSON 保存失败：{error}", file=sys.stderr)
+
     assets = [
         str(path.relative_to(output_dir))
         for path in sorted(assets_dir.rglob("*"))
@@ -72,32 +86,68 @@ def main() -> int:
     ]
 
     layout_items = []
-    page_sizes = {
-        page.page_no: (float(page.size.width), float(page.size.height))
-        for page in document.pages
-        if getattr(page, "page_no", None) is not None and getattr(page, "size", None) is not None
-    }
-    for picture in document.pictures:
-        for prov in picture.prov or []:
-            bbox = getattr(prov, "bbox", None)
-            page_no = getattr(prov, "page_no", None)
-            if bbox is None or page_no is None:
-                continue
-            label = getattr(picture, "label", None)
-            page_width, page_height = page_sizes.get(int(page_no), (None, None))
-            image = getattr(picture, "image", None)
-            asset = getattr(image, "uri", None) or ""
-            layout_items.append({
-                "kind": "picture",
-                "page": int(page_no),
-                "bbox": [float(bbox.l), float(bbox.t), float(bbox.r), float(bbox.b)],
-                "label": getattr(label, "value", str(label or "")),
-                "page_width": page_width,
-                "page_height": page_height,
-                "asset": asset,
-            })
+    pages = getattr(document, "pages", {}) or {}
+    page_sizes = {}
+    page_entries = pages.items() if hasattr(pages, "items") else enumerate(pages, start=1)
+    for page_key, page in page_entries:
+        page_no = getattr(page, "page_no", None) or page_key
+        size = getattr(page, "size", None) or getattr(page, "page_size", None)
+        if page_no is None or size is None:
+            continue
+        page_sizes[int(page_no)] = (float(size.width), float(size.height))
+
+    def asset_reference(item):
+        image = getattr(item, "image", None)
+        uri = getattr(image, "uri", None) if image is not None else None
+        if uri is None:
+            return ""
+        raw = str(uri)
+        try:
+            raw = Path(raw).resolve().relative_to(output_dir).as_posix()
+        except (ValueError, OSError):
+            pass
+        return raw
+
+    collections = [
+        ("text", getattr(document, "texts", []) or []),
+        ("table", getattr(document, "tables", []) or []),
+        ("picture", getattr(document, "pictures", []) or []),
+    ]
+    for kind, items in collections:
+        for item_index, item in enumerate(items):
+            source_ref = str(getattr(item, "self_ref", "") or f"{kind}-{item_index + 1}")
+            label = getattr(item, "label", None)
+            text = getattr(item, "text", None)
+            for prov_index, prov in enumerate(getattr(item, "prov", []) or []):
+                bbox = getattr(prov, "bbox", None)
+                page_no = getattr(prov, "page_no", None)
+                if bbox is None or page_no is None:
+                    continue
+                page_width, page_height = page_sizes.get(int(page_no), (None, None))
+                layout_items.append({
+                    "id": f"{source_ref}#{prov_index + 1}",
+                    "source_ref": source_ref,
+                    "kind": kind,
+                    "page": int(page_no),
+                    "order": len(layout_items),
+                    "bbox": [float(bbox.l), float(bbox.t), float(bbox.r), float(bbox.b)],
+                    "coord_origin": str(getattr(bbox, "coord_origin", "")),
+                    "label": getattr(label, "value", str(label or "")),
+                    "text": str(text or "") if kind == "text" else "",
+                    "page_width": page_width,
+                    "page_height": page_height,
+                    "asset": asset_reference(item) if kind == "picture" else "",
+                })
     layout_path = output_dir / "layout_ir.json"
-    layout_path.write_text(json.dumps({"version": 1, "pictures": layout_items}, ensure_ascii=False, indent=2), encoding="utf-8")
+    layout_path.write_text(json.dumps({
+        "version": 2,
+        "pages": [
+            {"page": page, "width": size[0], "height": size[1]}
+            for page, size in sorted(page_sizes.items())
+        ],
+        "blocks": layout_items,
+        "pictures": [item for item in layout_items if item["kind"] == "picture"],
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     manifest = {
         "parser": "docling",
@@ -106,6 +156,8 @@ def main() -> int:
         "source_pdf": str(Path(args.pdf).resolve()),
         "markdown": str(markdown_path.relative_to(output_dir)),
         "assets": assets,
+        "page_count": len(page_sizes),
+        "docling_document": str(docling_json_path.relative_to(output_dir)),
         "layout_ir": str(layout_path.relative_to(output_dir)),
     }
     (output_dir / "document.json").write_text(

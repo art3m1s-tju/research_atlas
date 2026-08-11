@@ -203,6 +203,15 @@ test("restoreBindingOrder reorders swapped atomic blocks while keeping translate
   assert.equal(restoreBindingOrder(source, "<!--ATLAS_BIND_figure-003-->x<!--ATLAS_BIND_END_figure-003-->"), "<!--ATLAS_BIND_figure-003-->x<!--ATLAS_BIND_END_figure-003-->");
 });
 
+test("structured binding validation rejects assets swapped between binding IDs", () => {
+  const source = [
+    "<!--ATLAS_BIND_figure-001-->![Image](assets/a.png)\n\n图 1: A<!--ATLAS_BIND_END_figure-001-->",
+    "<!--ATLAS_BIND_figure-002-->![Image](assets/b.png)\n\n图 2: B<!--ATLAS_BIND_END_figure-002-->",
+  ].join("\n\n");
+  const translated = source.replace("assets/a.png", "assets/TEMP.png").replace("assets/b.png", "assets/a.png").replace("assets/TEMP.png", "assets/b.png");
+  assert.ok(validateStructuredBindings(source, translated).some((issue) => issue.includes("图片资源身份")));
+});
+
 test("pdfLinksFromLandingHtml resolves OJS citation metadata and download links", () => {
   const html = [
     '<meta content="/index.php/AAAI/article/download/38149/40307" name="citation_pdf_url">',
@@ -291,6 +300,11 @@ test("numberReferenceSection creates ordered bibliography entries", () => {
   const numbered = numberReferenceSection("## 参考文献\n\nFirst reference.\n\nSecond reference.");
   assert.match(numbered, /1\. First reference/);
   assert.match(numbered, /2\. Second reference/);
+});
+
+test("numberReferenceSection preserves publisher bibliography numbering", () => {
+  const source = "## 参考文献\n\n[293] First reference.\n\n[294] Second reference.";
+  assert.equal(numberReferenceSection(source), source);
 });
 
 test("translation normalization does not move already-bound captions", () => {
@@ -732,6 +746,12 @@ test("strict validation accepts a structurally equivalent translation", () => {
     "![Image](assets/figure-1.png)",
   ].join("\n");
   assert.deepEqual(validateTranslatedMarkdown(source, translated, title), []);
+});
+
+test("strict validation rejects changed academic literals", () => {
+  const source = "## Results\n\nAccuracy reaches 99% on https://example.com/result.pdf.";
+  const translated = "# Paper\n\n## 结果\n\n准确率达到 98% on https://example.com/result.pdf.";
+  assert.ok(validateTranslatedMarkdown(source, translated, "Paper").some((issue) => issue.includes("学术字面量")));
 });
 
 test("strict validation tracks PaddleOCR HTML image references", () => {

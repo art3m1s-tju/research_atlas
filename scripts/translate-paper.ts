@@ -51,7 +51,7 @@ async function paddleOcrFetch(url: string, init: RequestInit, action: string, at
     attempts,
     timeoutMs: 60000,
     retryPost: String(init.method || "GET").toUpperCase() === "POST",
-    retryStatusOnPost: false,
+    retryStatusOnPost: true,
     idempotencyKey,
     onRetry: ({ attempt, error, status, delayMs }) => {
       console.warn(`  PaddleOCR ${action}第 ${attempt} 次尝试失败（${error ? networkErrorDetail(error) : `HTTP ${status}`}），${delayMs}ms 后重试`);
@@ -200,7 +200,7 @@ async function parsePaddleOcrJsonl(jsonl: string, outputDirectory: string) {
         assets.push(relativePath);
         replacement = relativePath;
       } catch (error) {
-        console.warn(`  PaddleOCR 图片下载失败，保留远程地址：${networkErrorDetail(error)}`);
+        throw new Error(`PaddleOCR 图片资源下载失败（第 ${pageIndex + 1} 页，${sourcePath}）：${networkErrorDetail(error)}`);
       }
       markdown = markdown.replaceAll(sourcePath, replacement);
     }
@@ -260,16 +260,31 @@ async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDire
     if (!jsonUrl) throw new Error("PaddleOCR 完成任务但没有返回 JSON 结果地址");
     const jsonResponse = await paddleOcrFetch(jsonUrl, { signal: AbortSignal.timeout(60000) }, "结果下载");
     if (!jsonResponse.ok) throw new Error(`PaddleOCR 结果下载失败（HTTP ${jsonResponse.status}）`);
-    const parsed = await parsePaddleOcrJsonl(await jsonResponse.text(), outputDirectory);
+    const rawJsonl = await jsonResponse.text();
+    await fs.writeFile(path.join(outputDirectory, "paddleocr_raw.jsonl"), rawJsonl, "utf8");
+    const parsed = await parsePaddleOcrJsonl(rawJsonl, outputDirectory);
+    const stats = await pdfExtractionStats(pdfPath);
+    if (stats.pages > 0 && parsed.pageCount !== stats.pages) {
+      throw new Error(`SOURCE_QUALITY:PaddleOCR 返回 ${parsed.pageCount} 页，但 PDF 共 ${stats.pages} 页`);
+    }
+    const completeness = assessTextExtractionCompleteness(parsed.markdown, {
+      ...stats,
+      minCharsPerPage: 250,
+    });
+    if (!completeness.ok) {
+      throw new Error(`SOURCE_QUALITY:PaddleOCR 解析未通过完整性门禁：${completeness.issues.slice(0, 6).join("；")}`);
+    }
     const markdownPath = path.join(outputDirectory, "source_structured.md");
     await fs.writeFile(markdownPath, `${parsed.markdown}\n`, "utf8");
     const manifest = {
       parser: "paddleocr",
       parser_model: parserModel,
+      parser_version: "PaddleOCR-VL-1.6",
       source_pdf: sourceUrl,
       pdf_sha256: createHash("sha256").update(await fs.readFile(pdfPath)).digest("hex"),
       markdown: "source_structured.md",
       page_count: parsed.pageCount,
+      expected_page_count: stats.pages,
       assets: parsed.assets,
       job_id: job.jobId,
     };
@@ -503,6 +518,10 @@ async function recoverFigureTablesFromPdf(markdown: string, pdfPath: string, out
     }
     const visualGroups = [...figureGroups.values()].sort((left, right) => left.captionIndex - right.captionIndex);
     if (!visualGroups.length) continue;
+    if (visualGroups.length !== 1) {
+      console.warn(`  PDF 第 ${pageNumber} 页有 ${visualGroups.length} 个视觉对象，无法确认图片一一对应；保留 OCR 结构并进入 needs_review`);
+      continue;
+    }
     const temporaryPrefix = path.join(outputDirectory, `.pdf-image-page-${pageNumber}`);
     let candidates: string[] = [];
     try {
@@ -510,6 +529,10 @@ async function recoverFigureTablesFromPdf(markdown: string, pdfPath: string, out
       candidates = (await fs.readdir(outputDirectory))
         .filter((name) => name.startsWith(path.basename(temporaryPrefix)) && /\.png$/i.test(name))
         .map((name) => path.join(outputDirectory, name));
+      if (candidates.length > 1) {
+        console.warn(`  PDF 第 ${pageNumber} 页提取到 ${candidates.length} 个图片资源，无法确认与视觉对象一一对应；保留 OCR 结构并进入 needs_review`);
+        continue;
+      }
       let best: string | null = null;
       if (candidates.length) {
         const sizes = await Promise.all(candidates.map(async (file) => ({ file, size: (await fs.stat(file)).size })));
@@ -624,7 +647,7 @@ async function extractPdf(urls: string[], outputDirectory: string, onProgress: P
   } catch {
     // No valid cached PDF: continue through remote candidates.
   }
-  if (cachedBytes && cachedBytes.subarray(0, 4).toString() === "%PDF") {
+  if (cachedBytes && cachedBytes.subarray(0, 4).toString() === "%PDF" && process.env.TRANSLATION_FORCE !== "1") {
     const sourceUrl = urls[0] || "本地已校验 PDF 缓存";
     onProgress("downloading", "正在复用已校验的 PDF 缓存");
     const reused = await tryReuseParsedSource(cachedPdfPath, outputDirectory, sourceUrl, onProgress);
@@ -707,6 +730,9 @@ async function translateChunk(chunk: string, index: number | string, total: numb
   const data = await response.json().catch(() => { throw new Error("DeepSeek 返回了无法解析的 JSON"); });
   const content = data.choices?.[0]?.message?.content;
   if (typeof content !== "string" || !content.trim()) throw new Error("DeepSeek 返回空译文");
+  if (data.choices?.[0]?.finish_reason && data.choices[0].finish_reason !== "stop") {
+    throw new Error(`第 ${index}/${total} 分块未正常结束：finish_reason=${data.choices[0].finish_reason}`);
+  }
   const invalidTokens = requiredTokens.filter((token) => tokenOccurrenceCount(content, token) !== 1);
   if (invalidTokens.length) throw new Error(`第 ${index}/${total} 分块中，DeepSeek 改写或遗漏了 ${invalidTokens.length} 个公式/图片/表格占位符`);
   const inventedTokens = findUnknownProtectedTokens(content, requiredTokens);
@@ -887,7 +913,11 @@ async function main() {
   const sourceHash = translationSourceHash(paper, {
     model,
     parser: process.env.TRANSLATION_PARSER || "auto",
+    parserVersion: process.env.TRANSLATION_PARSER_VERSION || "",
     formulaEnabled: process.env.TRANSLATION_ENABLE_FORMULA || "1",
+    ocrEnabled: process.env.TRANSLATION_ENABLE_OCR || "0",
+    imageScale: process.env.TRANSLATION_IMAGE_SCALE || "2",
+    semanticModel: process.env.DEEPSEEK_SEMANTIC_MODEL || "",
     glossary,
   });
   const outputDirectory = path.join(process.cwd(), translationDirectory(paperId));
@@ -926,6 +956,21 @@ async function main() {
   }, 60000);
   heartbeat.unref();
   await fs.mkdir(outputDirectory, { recursive: true });
+  if (process.env.TRANSLATION_FORCE === "1") {
+    await Promise.all([
+      "source.pdf",
+      "source.md",
+      "source_structured.md",
+      "document.json",
+      "docling_document.json",
+      "layout_ir.json",
+      "paddleocr_raw.jsonl",
+      "structure_manifest.json",
+      "translation_meta.json",
+      "translation_report.md",
+    ].map((file) => fs.rm(path.join(outputDirectory, file), { force: true })));
+    await fs.rm(path.join(outputDirectory, "chunks"), { recursive: true, force: true });
+  }
   await fs.rm(path.join(outputDirectory, "translation_zh.md"), { force: true });
   await fs.rm(path.join(outputDirectory, "translation_candidate.md"), { force: true });
   const alternatives = paper.normalized_title
@@ -1080,7 +1125,7 @@ async function main() {
   await fs.rename(temporaryReportPath, reportPath);
   const status = validationIssues.length ? "needs_review" : "completed";
   const validationError = validationIssues.length ? validationIssues.join("；") : null;
-  finishTranslationJob(db, paperId, jobToken, {
+  const finished = finishTranslationJob(db, paperId, jobToken, {
     status,
     error: validationError,
     progressPhase: status,
@@ -1089,6 +1134,7 @@ async function main() {
     progressCurrent: chunks.length,
     progressTotal: chunks.length,
   });
+  if (finished.changes !== 1) throw new Error("翻译任务所有权校验失败：无法提交最终状态");
   clearInterval(heartbeat);
   db.close();
 }
