@@ -29,6 +29,7 @@ import {
   splitTranslationChunks,
   stripStructuredBindingMarkers,
   translationPrompt,
+  translationRunDirectory,
   translationSourceHash,
   translationUrlCandidates,
   unwrapReferenceMathBlocks,
@@ -719,6 +720,10 @@ test("translation cache hash invalidates the previous format and prompt versions
   assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v14-source-ir" }));
   assert.notEqual(current, translationSourceHash(paper, { ...runtime, promptVersion: "academic-markdown-v9-source-ir" }));
   assert.notEqual(current, translationSourceHash(paper, { ...runtime, formatVersion: "structured-pdf-v14-source-ir", promptVersion: "academic-markdown-v9-source-ir" }));
+});
+
+test("translation workers receive isolated artifact directories", () => {
+  assert.equal(translationRunDirectory(23, "job-token"), "data/translation-runs/23/job-token");
 });
 
 test("translationUrlCandidates adds a DOI landing source and prefers direct PDFs", () => {

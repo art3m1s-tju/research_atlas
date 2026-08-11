@@ -124,7 +124,7 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const candidates = translationUrlCandidates(paper, alternatives);
     if (!candidates.length) return NextResponse.json({ error: "这篇论文没有可访问的 PDF，暂时无法生成全文翻译。" }, { status: 400 });
     const sourceHash = translationSourceHash(paper, translationRuntime());
-    const existing = db.prepare("SELECT status, source_hash, error, progress_message, lease_expires_at FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
+    const existing = db.prepare("SELECT status, source_hash, error, progress_message, lease_expires_at, output_dir FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
     if (existing?.status === "completed" && existing.source_hash === sourceHash && !payload.force && hasTranslationArtifacts(existing.output_dir || translationDirectory(paper.id))) {
       return NextResponse.json({ success: true, cached: true, status: existing.status, message: "已存在同版本中文翻译。" });
     }

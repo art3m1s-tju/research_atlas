@@ -21,6 +21,7 @@ data/translation-*.log
 data/atlas-web.log
 data/atlas-web.pid
 data/translations/
+data/translation-runs/
 
 # env
 .env.local

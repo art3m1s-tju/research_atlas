@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfBboxCropArgs, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, resolveInstitutionNames, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown, type DocumentLayoutInput } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfBboxCropArgs, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, resolveInstitutionNames, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationRunDirectory, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown, type DocumentLayoutInput } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
 import { assertTranslationOwnership, claimTranslationJob, failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationJobMetadata, updateTranslationProgress } from "../src/lib/translation-job";
 
@@ -930,7 +930,6 @@ async function main() {
     semanticModel: process.env.DEEPSEEK_SEMANTIC_MODEL || "",
     glossary,
   });
-  const outputDirectory = path.join(process.cwd(), translationDirectory(paperId));
   let jobToken = process.env.TRANSLATION_JOB_TOKEN || "";
   if (!jobToken) {
     // Direct CLI runs are a formal entry point: claim a managed row so the
@@ -942,6 +941,7 @@ async function main() {
     }
     jobToken = claim.jobToken;
   }
+  const outputDirectory = path.join(process.cwd(), translationRunDirectory(paperId, jobToken));
   activeJobToken = jobToken;
   const started = startTranslationJob(db, paperId, jobToken, process.pid, leaseMinutes);
   if (started.changes !== 1) throw new Error("翻译任务启动失败：job token 已失效或任务已被其他 worker 接管");
@@ -1030,7 +1030,7 @@ async function main() {
   const metadataResult = updateTranslationJobMetadata(db, paperId, jobToken, leaseMinutes, {
     sourceHash,
     sourceUrl: extracted.url,
-    outputDir: translationDirectory(paperId),
+    outputDir: path.relative(process.cwd(), outputDirectory),
     sourceChars: source.length,
     progressMessage: `正在翻译 0/${chunks.length} 个章节分块`,
     progressTotal: chunks.length,

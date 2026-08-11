@@ -293,6 +293,11 @@ export function translationDirectory(paperId: number) {
   return `data/translations/${paperId}`;
 }
 
+/** Each worker writes to an isolated directory until its token owns the final state. */
+export function translationRunDirectory(paperId: number, jobToken: string) {
+  return `data/translation-runs/${paperId}/${jobToken}`;
+}
+
 /**
  * Convert a PDF bbox (points, y-up as used by Docling) into pdftoppm crop
  * arguments at the given DPI (origin top-left, pixels).
