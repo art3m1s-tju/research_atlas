@@ -263,12 +263,15 @@ async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDire
     const rawJsonl = await jsonResponse.text();
     await fs.writeFile(path.join(outputDirectory, "paddleocr_raw.jsonl"), rawJsonl, "utf8");
     const parsed = await parsePaddleOcrJsonl(rawJsonl, outputDirectory);
-    const stats = await pdfExtractionStats(pdfPath);
-    if (stats.pages > 0 && parsed.pageCount !== stats.pages) {
-      throw new Error(`SOURCE_QUALITY:PaddleOCR 返回 ${parsed.pageCount} 页，但 PDF 共 ${stats.pages} 页`);
+    const expectedPageCount = total > 0 ? total : parsed.pageCount;
+    if (expectedPageCount > 0 && parsed.pageCount !== expectedPageCount) {
+      throw new Error(`SOURCE_QUALITY:PaddleOCR 返回 ${parsed.pageCount} 页，但云端任务报告 ${expectedPageCount} 页`);
     }
     const completeness = assessTextExtractionCompleteness(parsed.markdown, {
-      ...stats,
+      pages: expectedPageCount,
+      pagesAvailable: expectedPageCount > 0,
+      embeddedImages: parsed.assets.length,
+      imagesAvailable: true,
       minCharsPerPage: 250,
     });
     if (!completeness.ok) {
@@ -284,7 +287,7 @@ async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDire
       pdf_sha256: createHash("sha256").update(await fs.readFile(pdfPath)).digest("hex"),
       markdown: "source_structured.md",
       page_count: parsed.pageCount,
-      expected_page_count: stats.pages,
+      expected_page_count: expectedPageCount,
       assets: parsed.assets,
       job_id: job.jobId,
     };
@@ -380,7 +383,8 @@ async function runPdftotextParser(pdfPath: string, outputDirectory: string, onPr
 }
 
 async function parseStructuredPdf(pdfPath: string, sourceUrl: string, outputDirectory: string, onProgress: ParserProgress) {
-  const parserMode = (process.env.TRANSLATION_PARSER || "auto").toLowerCase();
+  const cloudOnly = process.env.TRANSLATION_CLOUD_ONLY !== "0";
+  const parserMode = (cloudOnly ? "paddleocr-only" : process.env.TRANSLATION_PARSER || "paddleocr-only").toLowerCase();
   if (parserMode === "docling") {
     const docling = await runDoclingParser(pdfPath, outputDirectory, onProgress);
     if (!docling.completeness.ok) {
@@ -483,6 +487,9 @@ async function loadDocumentLayout(outputDirectory: string, manifest: Record<stri
 }
 
 async function recoverFigureTablesFromPdf(markdown: string, pdfPath: string, outputDirectory: string) {
+  if (process.env.TRANSLATION_CLOUD_ONLY !== "0") {
+    return { markdown, recovered: [] as Array<{ id: string; source_table_id: string; page: number; asset: string }> };
+  }
   const recovered: Array<{ id: string; source_table_id: string; page: number; asset: string }> = [...markdown.matchAll(/assets\/page-(\d+)-recovered-(\d+)\.(png|jpg|jpeg)/gi)].map((match) => ({
     id: `figure-recovered-${match[1]}-${match[2]}`,
     source_table_id: `table-${match[2].padStart(3, "0")}`,

@@ -96,9 +96,12 @@ UNPAYWALL_EMAIL=your-email@example.com
 
 DATABASE_PATH=./data/atlas.db
 
-# 本地语义检索模型（首次同步时自动下载）
-EMBEDDING_MODEL=Xenova/paraphrase-multilingual-MiniLM-L12-v2
-TRANSFORMERS_CACHE=./.cache/transformers
+# 云端语义检索 embedding（DashScope OpenAI-compatible API）
+EMBEDDING_PROVIDER=api
+EMBEDDING_API_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_API_KEY=
+EMBEDDING_MODEL=qwen3.7-text-embedding
+EMBEDDING_DIMENSIONS=1024
 
 # 外部论文接口请求控制
 SYNC_REQUEST_TIMEOUT_MS=15000
@@ -109,7 +112,7 @@ SYNC_REQUEST_RETRIES=2
 
 - arXiv 不需要注册或 API Key，但它不提供引用量，因此纯 arXiv 记录可能显示“暂无数据”。
 - OpenAlex Key 启用后，论文会获得引用量、发表日期和同年份引用百分位；系统不会单纯按总引用量排序。
-- 语义检索使用本地多语言 embedding 模型；首次同步会下载模型，之后复用本地缓存。
+- 语义检索默认使用 DashScope 云端 embedding API；只有显式设置 `EMBEDDING_PROVIDER=local` 时才会加载本地 HuggingFace 模型。
 - Crossref 用于 DOI、期刊/会议元数据校正。
 - Unpaywall 用于寻找合法开放获取 PDF。
 - `.env.local` 和 `data/*.db` 已被 `.gitignore` 排除，不应提交密钥或本地数据库。
@@ -118,7 +121,7 @@ SYNC_REQUEST_RETRIES=2
 - 如果暂时没有配置 `DEEPSEEK_API_KEY`，收藏流程会退回本地关键词规则并明确标注，不会伪造 DeepSeek 结果。论文详情页也可以手动点击“智能分类”重试。
 - 中文摘要与中文速览分开保存：中文摘要是英文摘要的忠实翻译，中文速览是压缩后的阅读提示。详情页缺少中文摘要时可点击“生成中文摘要”；成功结果写入 SQLite，后续不会重复调用。
 - Zotero 建议先导出 BibTeX，再在网页左侧“导入 Zotero/BibTeX”；导入的论文会作为兴趣样本参与后续推荐。
-- 详情页的“尝试解析 PDF 全文”使用本机结构化解析器提取开放 PDF；没有安装 Docling 时才回退到 `pdftotext` 和摘要级证据。
+- 详情页的“尝试解析 PDF 全文”默认使用云端 PaddleOCR-VL 解析开放 PDF，不需要本机 Docling、pdftotext 或本地 OCR 模型。
 - `DIGEST_WEBHOOK_URL`、`TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID` 都是可选配置；不配置时只生成本地 Markdown，不会发送外部消息。
 
 ## 同步论文
@@ -154,11 +157,11 @@ npm run summarize:papers
 
 分类接口使用结构化 JSON，要求模型返回主方向、辅助方向、置信度、中文理由、证据术语和可选的新方向建议。它不会根据模型自由发挥的会议、引用量或实验结果做分类。
 
-项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF（瞬时网络错误会自动重试并退避），优先用本地 Docling 解析（未安装时回退 `pdftotext`，且回退结果必须通过页数/文本覆盖率和图片完整性门禁），只有本地解析不可用或质量不达标时才调用 PaddleOCR-VL-1.6 云端 API。解析过程会按页显示进度，标题层级、阅读顺序、公式、图片和表格交给 DeepSeek 按章节片段翻译。图片资源会保存到 `data/translations/<paper-id>/assets/` 并直接在中文阅读页渲染；已验证的 PDF 和解析结果默认复用（以 PDF SHA-256 校验，无校验签名的旧缓存视为一次缓存失效），成功片段会缓存在 `chunks/` 中以支持断点续译。译文、原文、解析清单和报告分别保存为 `translation_zh.md`、`source.md`、`document.json` 和 `translation_report.md`。章节、公式、图片或表格校验失败时，任务会标记为“需人工复核”，不会报告为已完成。任务带 lease/heartbeat 和 job token 所有权隔离：进程异常退出后，轮询会检测过期租约并把任务标记为失败，下次点击即可重新入队；旧 worker 无法覆盖新任务的状态。翻译仍需要配置 DeepSeek，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
+项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF（瞬时网络错误会自动重试并退避），默认直接调用 PaddleOCR-VL-1.6 云端 API，不加载本地 Docling、pdftotext、pdfimages 或 pdftoppm。解析过程会按页显示进度，标题层级、阅读顺序、公式、图片和表格交给 DeepSeek 按章节片段翻译；歧义图表可交给 Qwen3-VL-Flash 云端复核。每次任务的资源和中间产物保存到独立的 `data/translation-runs/<paper-id>/<job-token>/` 目录，避免旧 worker 覆盖新任务；已验证的 PDF 和解析结果默认按 PDF SHA-256 复用，成功片段缓存在任务目录中以支持断点续译。章节、公式、图片或表格校验失败时，任务会标记为“需人工复核”，不会报告为已完成。翻译仍需要配置 DeepSeek、PaddleOCR 和可选的 Qwen Key，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
 
 ### 配置云端 PDF 解析器
 
-在 `.env.local` 中配置 `PADDLEOCR_ACCESS_TOKEN` 作为云端兜底。默认 `TRANSLATION_PARSER=auto`：优先使用本地 Docling 解析（`npm run setup:translation-parser` 安装，未安装时回退 `pdftotext`），本地解析失败或质量不达标时才上传 PaddleOCR-VL-1.6；如需强制云端解析可改为 `paddleocr-only`。所有网络调用（PDF 下载、OCR 提交/轮询、DeepSeek）统一只对瞬时错误重试，指数退避并遵守 `Retry-After`，400/401 等永久错误不会浪费请求。图表语义审校优先使用 Qwen3-VL-Flash：配置 `QWEN_VL_API_KEY`（或 `DASHSCOPE_API_KEY`）、`QWEN_VL_API_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1` 和 `QWEN_VL_MODEL=qwen3-vl-flash` 后，Qwen 只接收 PaddleOCR 导出的裁剪图，DeepSeek 仍负责标题、正文和题注翻译；未配置 Qwen Key 时自动回退到 PaddleOCR-VL 的版面识别。
+在 `.env.local` 中配置 `TRANSLATION_CLOUD_ONLY=1`、`TRANSLATION_PARSER=paddleocr-only` 和 `PADDLEOCR_ACCESS_TOKEN`，即可强制所有论文解析走云端。该模式不调用本地 Docling、pdftotext、pdfimages 或 pdftoppm；如果云端结果无法确认矢量图或复杂关系，会进入 `needs_review`，而不是使用本地截图猜测。所有网络调用（PDF 下载、OCR 提交/轮询、DeepSeek、Qwen、embedding）统一只对瞬时错误重试，指数退避并遵守 `Retry-After`，400/401 等永久错误不会浪费请求。图表语义审校优先使用 Qwen3-VL-Flash：配置 `QWEN_VL_API_KEY`（或 `DASHSCOPE_API_KEY`）、`QWEN_VL_API_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1` 和 `QWEN_VL_MODEL=qwen3-vl-flash` 后，Qwen 只接收 PaddleOCR 导出的裁剪图，DeepSeek 仍负责标题、正文和题注翻译。
 
 网页中的“同步最新论文”按钮和每日任务也调用同一个多源同步器：
 
