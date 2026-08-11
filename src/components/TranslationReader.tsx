@@ -120,7 +120,7 @@ export default function TranslationReader({ id }: { id: string }) {
             <a href={`/papers/${encodeURIComponent(canonicalId)}`} className="text-sm text-blue-600 hover:underline">← 返回论文详情</a>
             <div className="flex flex-wrap gap-2"><button type="button" onClick={() => setShowOriginal((value) => !value)} className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100">{showOriginal ? "收起原文 PDF" : "查看原文 PDF"}</button><a href={`/api/papers/${encodeURIComponent(canonicalId)}/translation?file=translation_zh.md`} className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50">下载 Markdown</a></div>
           </div>
-          <h1 className="paper-title mt-6 text-2xl font-bold leading-tight text-gray-900 sm:text-3xl">{translationMeta?.title_zh || paper?.title || "中文论文译文"}</h1>
+          <h1 className="paper-title mt-6 font-bold leading-tight text-gray-900">{translationMeta?.title_zh || paper?.title || "中文论文译文"}</h1>
           {paper && <div className="paper-meta mt-4"><p className="paper-authors"><span className="paper-meta-label">作者</span>{renderAuthors(translationMeta?.authors || paper.authors, translationMeta?.author_affiliations)}</p>{translationMeta?.affiliations?.length ? <div className="paper-affiliations">{translationMeta.affiliations.map((affiliation) => <p className="paper-affiliation" key={`${affiliation.index}-${affiliation.text}`}><sup>{affiliation.index}</sup>{affiliation.text}</p>)}</div> : null}<p className="paper-publication">{paper.venue || "发表渠道待核实"} · {paper.year || "年份未知"}</p></div>}
         </header>
         <div className="px-6 py-8 sm:px-10 sm:py-10">
@@ -138,9 +138,9 @@ export default function TranslationReader({ id }: { id: string }) {
                 table: ({ children }) => <div className="paper-table-wrap"><table>{children}</table></div>,
                 th: ({ children, ...props }) => <th {...props}>{renderTableCellMath(children)}</th>,
                 td: ({ children, ...props }) => <td {...props}>{renderTableCellMath(children)}</td>,
-                img: ({ src, alt }) => {
+                img: ({ src, alt, width, height }) => {
                   if (!src || typeof src !== "string") return null;
-                  return <button type="button" className="paper-image-button" aria-label="放大查看图片" onClick={() => setImagePreview({ src, alt: alt || "论文图表" })}><img src={src} alt={alt || "论文图表"} loading="lazy" /></button>;
+                  return <button type="button" className="paper-image-button" aria-label="放大查看图片" onClick={() => setImagePreview({ src, alt: alt || "论文图表" })}><img src={src} alt={alt || "论文图表"} width={width} height={height} style={{ width: width || undefined, height: height || undefined }} loading="lazy" /></button>;
                 },
               }}
             >{bodyMarkdown(markdown)}</ReactMarkdown>

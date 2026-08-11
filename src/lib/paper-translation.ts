@@ -438,16 +438,27 @@ function normalizeTableHeaders(markdown: string) {
   });
 }
 
+function normalizedImageHtml(imageTag: string) {
+  const src = htmlAttribute(imageTag, "src");
+  if (!src) return "";
+  const alt = htmlAttribute(imageTag, "alt") || "论文图表";
+  const width = htmlAttribute(imageTag, "width");
+  const height = htmlAttribute(imageTag, "height");
+  const safeAttribute = (value: string) => value.replace(/"/g, "&quot;").replace(/[<>]/g, "");
+  const dimensions = [
+    /^\d+(?:\.\d+)?%?$/.test(width) ? ` width="${safeAttribute(width)}"` : "",
+    /^\d+(?:\.\d+)?%?$/.test(height) ? ` height="${safeAttribute(height)}"` : "",
+  ].join("");
+  return `<img src="${safeAttribute(src)}" alt="${safeAttribute(alt)}"${dimensions} />`;
+}
+
 function normalizeParserHtml(markdown: string) {
   let normalized = markdown.replace(/<div\b[^>]*>\s*(<img\b[^>]*>)\s*<\/div>/gi, (_match, imageTag: string) => {
-    const src = htmlAttribute(imageTag, "src");
-    const alt = htmlAttribute(imageTag, "alt") || "论文图表";
-    return src ? `\n\n![${alt}](${src})\n\n` : "";
+    const image = normalizedImageHtml(imageTag);
+    return image ? `\n\n${image}\n\n` : "";
   });
   normalized = normalized.replace(/<img\b[^>]*>/gi, (imageTag) => {
-    const src = htmlAttribute(imageTag, "src");
-    const alt = htmlAttribute(imageTag, "alt") || "论文图表";
-    return src ? `![${alt}](${src})` : "";
+    return normalizedImageHtml(imageTag);
   });
   normalized = normalized.replace(/<div\b[^>]*>\s*((?:\*\*)?(?:Figure|Fig\.?|Table)\s*(?:\d+|[IVXLCDM]+)[\s\S]*?)\s*<\/div>/gi, "$1");
   return normalizeTableHeaders(normalized);

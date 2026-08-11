@@ -15,11 +15,13 @@
   --radius-card: 20px;
   --radius-chip: 10px;
   --radius-button: 12px;
-  --paper-level-1-size: clamp(2.6rem, 4.8vw, 3.8rem);
-  --paper-body-size: 1.22rem;
-  --paper-caption-size: 1.05rem;
-  --paper-header-size: 1.08rem;
-  --paper-cell-size: 1.02rem;
+  --paper-title-size: clamp(2rem, 4vw, 3rem);
+  --paper-h2-size: clamp(1.75rem, 3vw, 2.25rem);
+  --paper-h3-size: clamp(1.3rem, 2vw, 1.55rem);
+  --paper-body-size: 1.12rem;
+  --paper-caption-size: 0.95rem;
+  --paper-header-size: 0.96rem;
+  --paper-cell-size: 0.92rem;
 }
 
 @layer base {
@@ -32,30 +34,32 @@
 /* Keep the paper typography independent, while giving Atlas controls a readable
    desktop scale instead of relying on tiny utility defaults. */
 .atlas-ui { font-size: 1rem; }
-.atlas-ui .text-\[10px\] { font-size: 0.84rem; }
-.atlas-ui .text-\[11px\] { font-size: 0.89rem; }
-.atlas-ui .text-xs { font-size: 0.94rem; }
-.atlas-ui .text-sm { font-size: 1rem; }
-.atlas-ui .text-base { font-size: 1.08rem; }
-.atlas-ui .text-lg { font-size: 1.28rem; }
-.atlas-ui .text-xl { font-size: 1.45rem; }
-.atlas-ui .text-2xl { font-size: 1.75rem; }
-.atlas-ui .text-3xl { font-size: 2.35rem; }
+.atlas-ui .text-\[10px\] { font-size: 0.72rem; }
+.atlas-ui .text-\[11px\] { font-size: 0.78rem; }
+.atlas-ui .text-xs { font-size: 0.82rem; }
+.atlas-ui .text-sm { font-size: 0.9rem; }
+.atlas-ui .text-base { font-size: 1rem; }
+.atlas-ui .text-lg { font-size: 1.12rem; }
+.atlas-ui .text-xl { font-size: 1.25rem; }
+.atlas-ui .text-2xl { font-size: 1.5rem; }
+.atlas-ui .text-3xl { font-size: 1.875rem; }
 
 @media (max-width: 640px) {
   .atlas-ui { font-size: 1rem; }
-  .atlas-ui .text-\[10px\] { font-size: 0.82rem; }
-  .atlas-ui .text-\[11px\] { font-size: 0.88rem; }
-  .atlas-ui .text-xs { font-size: 0.94rem; }
-  .atlas-ui .text-sm { font-size: 1rem; }
-  .atlas-ui .text-lg { font-size: 1.2rem; }
-  .atlas-ui .text-xl { font-size: 1.35rem; }
+  .atlas-ui .text-\[10px\] { font-size: 0.72rem; }
+  .atlas-ui .text-\[11px\] { font-size: 0.76rem; }
+  .atlas-ui .text-xs { font-size: 0.8rem; }
+  .atlas-ui .text-sm { font-size: 0.88rem; }
+  .atlas-ui .text-lg { font-size: 1.08rem; }
+  .atlas-ui .text-xl { font-size: 1.2rem; }
 }
 
 .translation-prose {
+  max-width: 74ch;
+  margin-inline: auto;
   color: #1f2937;
   font-size: var(--paper-body-size);
-  line-height: 1.85;
+  line-height: 1.78;
   overflow-wrap: anywhere;
 }
 
@@ -69,10 +73,10 @@
   margin: 2rem 0 0.75rem;
 }
 
-.translation-prose h1,
-.translation-prose h2 { font-size: var(--paper-level-1-size); }
+.translation-prose h1 { font-size: var(--paper-title-size); }
+.translation-prose h2 { font-size: var(--paper-h2-size); }
 .translation-prose h2 { border-bottom: 1px solid #dbe3ef; padding-bottom: 0.55rem; margin-top: 2.8rem; }
-.translation-prose h3 { font-size: 1.55rem; color: #1e3a5f; margin-top: 2rem; }
+.translation-prose h3 { font-size: var(--paper-h3-size); color: #1e3a5f; margin-top: 2rem; }
 .translation-prose h4 { font-size: 1.28rem; color: #475569; margin-top: 1.5rem; }
 .translation-prose p { margin: 0.9rem 0; }
 .translation-prose .paper-caption {
@@ -96,17 +100,17 @@
 .translation-prose pre code { background: transparent; padding: 0; }
 .translation-prose .katex { overflow-wrap: normal; font-size: 1.05em; }
 .translation-prose .katex-display { display: block; overflow-x: auto; overflow-y: hidden; padding: 0.7rem 0; margin: 1.2rem auto; text-align: center; }
-.translation-prose .paper-table-wrap { width: 100%; overflow-x: auto; margin: 1.5rem 0 0.35rem; }
-.translation-prose table { width: max-content; min-width: 72%; border-collapse: collapse; margin: 0 auto; font-size: var(--paper-cell-size); }
+.translation-prose .paper-table-wrap { width: 100%; overflow-x: auto; margin: 1.5rem 0 0.35rem; -webkit-overflow-scrolling: touch; }
+.translation-prose table { width: max-content; min-width: min(100%, 42rem); border-collapse: collapse; margin: 0 auto; font-size: var(--paper-cell-size); }
 .translation-prose th,
-.translation-prose td { border: 1px solid #d1d5db; padding: 0.62rem 0.82rem; min-width: 7rem; vertical-align: middle; }
+.translation-prose td { border: 1px solid #d1d5db; padding: 0.5rem 0.62rem; min-width: 4rem; line-height: 1.45; vertical-align: middle; }
 .translation-prose th { background: #f3f4f6; font-size: var(--paper-header-size); font-weight: 750; text-align: center; }
 .translation-prose td { font-size: var(--paper-cell-size); text-align: left; }
-.translation-prose .paper-inline-math { white-space: nowrap; }
+.translation-prose .paper-inline-math { display: inline-block; max-width: 100%; overflow-x: auto; vertical-align: middle; white-space: nowrap; }
 .translation-prose .paper-formula-fallback { color: inherit; background: #fff7ed; border-radius: 0.25rem; padding: 0.08rem 0.25rem; }
 .translation-prose img {
   display: block;
-  width: 100%;
+  width: auto;
   max-width: 100%;
   height: auto;
   margin: 1.25rem auto;
@@ -115,9 +119,9 @@
   background: #fff;
   cursor: zoom-in;
 }
-.translation-prose .paper-image-button { display: block; width: 100%; padding: 0; border: 0; background: transparent; }
+.translation-prose .paper-image-button { display: block; width: fit-content; max-width: 100%; margin-inline: auto; padding: 0; border: 0; background: transparent; }
 
-.paper-title { text-align: center; font-size: var(--paper-level-1-size); line-height: 1.16; }
+.paper-title { text-align: center; font-size: var(--paper-title-size); line-height: 1.16; text-wrap: balance; }
 .paper-meta { text-align: center; }
 .paper-authors { margin: 0; color: #334155; font-size: 1.12rem; line-height: 1.75; }
 .paper-author sup { margin-left: 0.08rem; color: #475569; font-size: 0.68em; vertical-align: super; }
@@ -132,10 +136,10 @@
 .paper-reader header > div:first-child div a { font-size: 0.92rem; }
 
 @media (max-width: 640px) {
-  .translation-prose { font-size: 1.08rem; }
-  .translation-prose h1 { font-size: 1.85rem; }
-  .translation-prose h2 { font-size: 1.6rem; }
-  .translation-prose h3 { font-size: 1.35rem; }
+  .translation-prose { max-width: none; font-size: 1rem; line-height: 1.75; }
+  .translation-prose h1 { font-size: 1.9rem; }
+  .translation-prose h2 { font-size: 1.5rem; }
+  .translation-prose h3 { font-size: 1.25rem; }
   .paper-title { font-size: 2rem; }
   .paper-authors { font-size: 1rem; }
 }

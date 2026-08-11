@@ -56,8 +56,8 @@ test("prepareTranslationSource converts parser HTML images and assigns semantic 
   assert.match(prepared, /^## Methodology/m);
   assert.match(prepared, /^### Overview/m);
   assert.match(prepared, /^#### Detail/m);
-  assert.match(prepared, /!\[Image\]\(assets\/figure\.png\)/);
-  assert.doesNotMatch(prepared, /<img|<div/);
+  assert.match(prepared, /<img src="assets\/figure\.png" alt="Image" width="80%" \/>/);
+  assert.doesNotMatch(prepared, /<div/);
 });
 
 test("prepareTranslationSource removes author front matter and preserves figure-labelled table content", () => {
