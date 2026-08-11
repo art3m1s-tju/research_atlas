@@ -16,7 +16,7 @@ function loadLocalEnv() {
 
 async function main() {
   loadLocalEnv();
-  const { EMBEDDING_MODEL, embedText, paperEmbeddingText } = await import("../src/lib/semantic-search");
+  const { EMBEDDING_PROVIDER, EMBEDDING_VERSION, embedText, paperEmbeddingText } = await import("../src/lib/semantic-search");
   const db = new Database(process.env.DATABASE_PATH || "./data/atlas.db");
   const columns = new Set(
     (db.prepare("PRAGMA table_info(papers)").all() as { name: string }[]).map((column) => column.name),
@@ -29,7 +29,7 @@ async function main() {
     FROM papers
     WHERE embedding IS NULL OR embedding_model != ?
     ORDER BY id
-  `).all(EMBEDDING_MODEL) as {
+  `).all(EMBEDDING_VERSION) as {
     id: number;
     title: string;
     abstract: string | null;
@@ -37,12 +37,12 @@ async function main() {
     venue: string | null;
   }[];
 
-  console.log(`需要生成 ${papers.length} 篇论文的语义向量（模型：${EMBEDDING_MODEL}）`);
+  console.log(`需要生成 ${papers.length} 篇论文的语义向量（提供方：${EMBEDDING_PROVIDER}，版本：${EMBEDDING_VERSION}）`);
   const update = db.prepare("UPDATE papers SET embedding = ?, embedding_model = ? WHERE id = ?");
   for (let index = 0; index < papers.length; index += 1) {
     const paper = papers[index];
     const vector = await embedText(paperEmbeddingText(paper));
-    update.run(JSON.stringify(vector), EMBEDDING_MODEL, paper.id);
+    update.run(JSON.stringify(vector), EMBEDDING_VERSION, paper.id);
     if ((index + 1) % 10 === 0 || index + 1 === papers.length) {
       console.log(`  ${index + 1}/${papers.length}`);
     }
