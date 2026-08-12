@@ -157,7 +157,7 @@ npm run summarize:papers
 
 分类接口使用结构化 JSON，要求模型返回主方向、辅助方向、置信度、中文理由、证据术语和可选的新方向建议。它不会根据模型自由发挥的会议、引用量或实验结果做分类。
 
-项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF（瞬时网络错误会自动重试并退避），默认直接调用 PaddleOCR-VL-1.6 云端 API，不加载本地 Docling、pdftotext、pdfimages 或 pdftoppm。解析过程会按页显示进度，标题层级、阅读顺序、公式、图片和表格交给 DeepSeek 按章节片段翻译；歧义图表可交给 Qwen3-VL-Flash 云端复核。每次任务的资源和中间产物保存到独立的 `data/translation-runs/<paper-id>/<job-token>/` 目录，避免旧 worker 覆盖新任务；已验证的 PDF 和解析结果默认按 PDF SHA-256 复用，成功片段缓存在任务目录中以支持断点续译。章节、公式、图片或表格校验失败时，任务会标记为“需人工复核”，不会报告为已完成。翻译仍需要配置 DeepSeek、PaddleOCR 和可选的 Qwen Key，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
+项目内置了 `$atlas-paper-translate` 工作流技能，并已接入论文详情页的“翻译全文”按钮。点击后会在后台下载开放 PDF（瞬时网络错误会自动重试并退避），默认直接调用 PaddleOCR-VL-1.6 云端 API，不加载本地 Docling、pdftotext、pdfimages 或 pdftoppm。解析过程会按页显示进度，标题层级、阅读顺序、公式、图片和表格交给 DeepSeek 按章节片段翻译；表格本体不让模型重画，而是使用云端页面原图的 bbox 裁剪截图，表题和正文单独翻译；歧义图表可交给 Qwen3-VL-Flash 云端复核。每次任务的资源和中间产物保存到独立的 `data/translation-runs/<paper-id>/<job-token>/` 目录，避免旧 worker 覆盖新任务；已验证的 PDF 和解析结果默认按 PDF SHA-256 复用，成功片段缓存在任务目录中以支持断点续译。章节、公式、图片或表格校验失败时，任务会标记为“需人工复核”，不会报告为已完成。翻译仍需要配置 DeepSeek、PaddleOCR 和可选的 Qwen Key，且论文必须有可访问的 PDF；不会在同步论文时自动翻译全部论文。
 
 ### 配置云端 PDF 解析器
 

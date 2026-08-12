@@ -449,12 +449,14 @@ function normalizedImageHtml(imageTag: string) {
   const alt = htmlAttribute(imageTag, "alt") || "论文图表";
   const width = htmlAttribute(imageTag, "width");
   const height = htmlAttribute(imageTag, "height");
+  const kind = htmlAttribute(imageTag, "data-atlas-kind");
   const safeAttribute = (value: string) => value.replace(/"/g, "&quot;").replace(/[<>]/g, "");
   const dimensions = [
     /^\d+(?:\.\d+)?%?$/.test(width) ? ` width="${safeAttribute(width)}"` : "",
     /^\d+(?:\.\d+)?%?$/.test(height) ? ` height="${safeAttribute(height)}"` : "",
   ].join("");
-  return `<img src="${safeAttribute(src)}" alt="${safeAttribute(alt)}"${dimensions} />`;
+  const semanticKind = ["figure", "table_image"].includes(kind) ? ` data-atlas-kind="${kind}"` : "";
+  return `<img src="${safeAttribute(src)}" alt="${safeAttribute(alt)}"${dimensions}${semanticKind} />`;
 }
 
 function normalizeParserHtml(markdown: string) {
@@ -817,8 +819,9 @@ function structuredObjectMatches(markdown: string) {
   const pattern = /<table\b[\s\S]*?<\/table>|!\[[^\]]*\]\(([^)\n]+)\)|<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi;
   const raw = [...markdown.matchAll(pattern)].map((match) => {
     const text = match[0];
-    const kind: StructuredBindingKind = /^<table\b/i.test(text) ? "table" : "figure";
-    const asset = kind === "figure" ? (match[1] || match[2]) : undefined;
+    const semanticKind = text.match(/data-atlas-kind=["'](figure|table_image)["']/i)?.[1]?.toLowerCase();
+    const kind: StructuredBindingKind = /^<table\b/i.test(text) ? "table" : semanticKind === "table_image" ? "table_image" : "figure";
+    const asset = kind === "figure" || kind === "table_image" ? (match[1] || match[2]) : undefined;
     return { start: match.index ?? 0, end: (match.index ?? 0) + text.length, text, kind, asset };
   });
   const grouped: typeof raw = [];
@@ -894,7 +897,7 @@ export function buildStructuredBindingManifest(markdown: string): StructuredBind
   const usedCaptions = new Set<string>();
   const manifestObjects: StructuredBindingObject[] = [];
   const ambiguous: string[] = [];
-  const counters: Record<"figure" | "table", number> = { figure: 0, table: 0 };
+  const counters: Record<"figure" | "table" | "table_image", number> = { figure: 0, table: 0, table_image: 0 };
 
   for (const object of objects) {
     counters[object.kind] += 1;
@@ -1251,7 +1254,7 @@ export function validateStructuredBindings(source: string, translated: string) {
     const translatedObjects = structuredObjectMatches(translatedWrapper.text);
     if (sourceObjects.length !== 1 || translatedObjects.length !== 1 || sourceObjects[0].kind !== translatedObjects[0].kind) {
       issues.push(`图表绑定块 ${sourceWrapper.id} 的对象类型或数量不一致`);
-    } else if (sourceObjects[0].kind === "figure" && sourceObjects[0].asset !== translatedObjects[0].asset) {
+    } else if ((sourceObjects[0].kind === "figure" || sourceObjects[0].kind === "table_image") && sourceObjects[0].asset !== translatedObjects[0].asset) {
       issues.push(`图表绑定块 ${sourceWrapper.id} 的图片资源身份不一致`);
     } else if (sourceObjects[0].kind === "table" && htmlTableSignature(sourceObjects[0].text) !== htmlTableSignature(translatedObjects[0].text)) {
       issues.push(`图表绑定块 ${sourceWrapper.id} 的表格结构不一致`);

@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfBboxCropArgs, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, resolveInstitutionNames, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationRunDirectory, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown, type DocumentLayoutInput } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, isLikelyChartTable, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfBboxCropArgs, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, resolveInstitutionNames, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationRunDirectory, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown, type DocumentLayoutInput } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
 import { assertTranslationOwnership, claimTranslationJob, failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationJobMetadata, updateTranslationProgress } from "../src/lib/translation-job";
 
@@ -183,7 +183,9 @@ async function parsePaddleOcrJsonl(jsonl: string, outputDirectory: string) {
   await fs.rm(assetsDirectory, { recursive: true, force: true });
   await fs.mkdir(assetsDirectory, { recursive: true });
   const assets: string[] = [];
+  const tableScreenshotIssues: string[] = [];
   const markdownPages: string[] = [];
+  const sharp = (await import("sharp")).default;
 
   for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
     const page = pages[pageIndex];
@@ -204,12 +206,58 @@ async function parsePaddleOcrJsonl(jsonl: string, outputDirectory: string) {
       }
       markdown = markdown.replaceAll(sourcePath, replacement);
     }
+    const tableBlocks = (page.prunedResult?.parsing_res_list || page.parsing_res_list || []).filter((block: any) => String(block.block_label || block.label || "").toLowerCase() === "table");
+    if (tableBlocks.length) {
+      const pageImageUrl = typeof page.inputImage === "string" ? page.inputImage : "";
+      let pageBuffer: Buffer | null = null;
+      try {
+        if (!pageImageUrl) throw new Error("PaddleOCR 没有返回页面原图地址");
+        const response = await paddleOcrFetch(pageImageUrl, { signal: AbortSignal.timeout(60000) }, "页面原图下载");
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        pageBuffer = Buffer.from(await response.arrayBuffer());
+      } catch (error) {
+        tableScreenshotIssues.push(`第 ${pageIndex + 1} 页表格截图失败：${networkErrorDetail(error)}`);
+      }
+      for (let tableIndex = 0; tableIndex < tableBlocks.length; tableIndex += 1) {
+        const block = tableBlocks[tableIndex];
+        const bbox = Array.isArray(block.block_bbox) && block.block_bbox.length === 4 ? block.block_bbox.map(Number) : null;
+        if (!pageBuffer || !bbox || bbox.some((value: number) => !Number.isFinite(value))) {
+          tableScreenshotIssues.push(`第 ${pageIndex + 1} 页第 ${tableIndex + 1} 个表格没有可用截图坐标`);
+          continue;
+        }
+        try {
+          const metadata = await sharp(pageBuffer).metadata();
+          const imageWidth = Number(metadata.width || 0);
+          const imageHeight = Number(metadata.height || 0);
+          const sourceWidth = Number(page.prunedResult?.width || page.width || imageWidth);
+          const sourceHeight = Number(page.prunedResult?.height || page.height || imageHeight);
+          if (!imageWidth || !imageHeight || !sourceWidth || !sourceHeight) throw new Error("页面尺寸缺失");
+          const scaleX = imageWidth / sourceWidth;
+          const scaleY = imageHeight / sourceHeight;
+          const padding = 8;
+          const left = Math.max(0, Math.floor(bbox[0] * scaleX) - padding);
+          const top = Math.max(0, Math.floor(bbox[1] * scaleY) - padding);
+          const right = Math.min(imageWidth, Math.ceil(bbox[2] * scaleX) + padding);
+          const bottom = Math.min(imageHeight, Math.ceil(bbox[3] * scaleY) + padding);
+          const width = right - left;
+          const height = bottom - top;
+          if (width <= 0 || height <= 0) throw new Error("表格截图尺寸无效");
+          const relativePath = path.posix.join("assets", `page-${pageIndex + 1}-table-${tableIndex + 1}.png`);
+          await sharp(pageBuffer).extract({ left, top, width, height }).png().toFile(path.join(outputDirectory, relativePath));
+          assets.push(relativePath);
+          const kind = isLikelyChartTable(String(block.block_content || "")) ? "figure" : "table_image";
+          markdown = markdown.replace(/<table\b[\s\S]*?<\/table>/i, `<img src="${relativePath}" alt="${kind === "figure" ? "图表截图" : "表格截图"}" data-atlas-kind="${kind}" />`);
+        } catch (error) {
+          tableScreenshotIssues.push(`第 ${pageIndex + 1} 页第 ${tableIndex + 1} 个表格截图失败：${networkErrorDetail(error)}`);
+        }
+      }
+    }
     if (markdown) markdownPages.push(markdown);
   }
 
   const markdown = markdownPages.join("\n\n---\n\n").trim();
   if (!markdown) throw new Error("PaddleOCR 没有生成结构化 Markdown");
-  return { markdown, assets, pageCount: pages.length };
+  return { markdown, assets, pageCount: pages.length, tableScreenshotIssues };
 }
 
 async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDirectory: string, onProgress: ParserProgress) {
@@ -289,6 +337,7 @@ async function parseWithPaddleOcr(pdfPath: string, sourceUrl: string, outputDire
       page_count: parsed.pageCount,
       expected_page_count: expectedPageCount,
       assets: parsed.assets,
+      table_screenshot_issues: parsed.tableScreenshotIssues,
       job_id: job.jobId,
     };
     await fs.writeFile(path.join(outputDirectory, "document.json"), JSON.stringify(manifest, null, 2), "utf8");
@@ -1093,6 +1142,10 @@ async function main() {
   const translatedBodyWithBindings = numberReferenceSection(normalizeTranslatedStructureLabels(normalizeTranslatedMarkdown(restoreHeadingLayout(source, normalizeExtraNumberedHeadings(source, restoreBindingOrder(source, results.join("\n\n").replace(/\n{3,}/g, "\n\n").trim())))), true));
   const validationMarkdown = `# ${translatedTitle}\n\n${translatedBodyWithBindings}`.trim();
   const validationIssues = validateTranslatedMarkdown(source, validationMarkdown, translatedTitle);
+  const tableScreenshotIssues = Array.isArray((extractedManifest as { table_screenshot_issues?: unknown }).table_screenshot_issues)
+    ? (extractedManifest as { table_screenshot_issues: unknown[] }).table_screenshot_issues.filter((issue): issue is string => typeof issue === "string")
+    : [];
+  if (tableScreenshotIssues.length) validationIssues.push(...tableScreenshotIssues.map((issue) => `表格截图需要人工复核：${issue}`));
   if (unresolvedBindingIds.length) validationIssues.push(`图表绑定需要人工复核：${unresolvedBindingIds.join("、")}`);
   if (bindingAnnotationError) validationIssues.push(`图表绑定加固失败：${bindingAnnotationError}`);
   const pdfAuthorNames = extractPaperAuthorAffiliations(extracted.text).map((entry) => entry.name);
