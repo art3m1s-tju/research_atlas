@@ -12,6 +12,7 @@ import {
   compareAuthorSources,
   findUnknownProtectedTokens,
   inspectSourceQuality,
+  isLikelyChartTable,
   repairSourceQuality,
   resolveInstitutionNames,
   normalizeTranslatedMarkdown,
@@ -548,6 +549,13 @@ test("ambiguous bindings still produce a readable candidate source", () => {
   const candidate = stripStructuredBindingMarkers(annotateStructuredBindings(source, manifest));
   assert.match(candidate, /assets\/figure-1\.png/);
   assert.match(candidate, /Table 1: OCR caption/);
+});
+
+test("chart data serialized as HTML is not counted as a normal table", () => {
+  const chartTable = "<table><tr><th>Unroll Length</th><th>Ours</th><th>Blue Line</th></tr><tr><td>0</td><td>0.0</td><td>0.0</td></tr><tr><td>10</td><td>1.2</td><td>0.8</td></tr><tr><td>20</td><td>2.4</td><td>1.6</td></tr></table>";
+  assert.equal(isLikelyChartTable(chartTable), true);
+  const manifest = buildStructuredBindingManifest(`${chartTable}\n\nFigure 5: Chart comparison.`);
+  assert.equal(manifest.objects[0]?.kind, "figure");
 });
 
 test("human binding decisions swap translated captions by stable object IDs", () => {

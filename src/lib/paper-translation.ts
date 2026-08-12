@@ -841,6 +841,24 @@ function structuredObjectMatches(markdown: string) {
   return grouped;
 }
 
+/** PaddleOCR sometimes serializes chart data as an HTML table. */
+export function isLikelyChartTable(value: string) {
+  const text = value.replace(/<[^>]+>/g, " ").replace(/&nbsp;/gi, " ").replace(/\s+/g, " ").trim();
+  const rows = (value.match(/<tr\b/gi) || []).length;
+  if (rows < 4) return false;
+  const chartSignals = [
+    /unroll\s+length/i,
+    /compounding\s+ratio/i,
+    /error\s+bar/i,
+    /smoothness\s*\(\s*mean\s*\)/i,
+    /\b(?:pc1|pc2)\b/i,
+    /\bnoise\s+level\b/i,
+    /\b[xy]\s*\[?\s*m\s*\]?/i,
+    /\b(?:pred\.?|recon\.?|ours|blue\s+line|red\s+line|green\s+line)\b/i,
+  ];
+  return chartSignals.filter((signal) => signal.test(text)).length >= 1;
+}
+
 function structuredCaptionMatches(markdown: string) {
   return [...markdown.matchAll(captionLabelPattern)].map((match, index) => ({
     id: `caption-${String(index + 1).padStart(3, "0")}`,
@@ -864,8 +882,15 @@ function structuredCaptionMatches(markdown: string) {
  * then exposes only ambiguous records to the optional semantic reviewer.
  */
 export function buildStructuredBindingManifest(markdown: string): StructuredBindingManifest {
-  const objects = structuredObjectMatches(markdown);
   const captions = structuredCaptionMatches(markdown);
+  const objects = structuredObjectMatches(markdown).map((object) => {
+    if (object.kind !== "table" || !isLikelyChartTable(object.text)) return object;
+    const nearbyTableCaption = captions.some((caption) => caption.kind === "table" && (
+      (caption.end <= object.start && object.start - caption.end <= 4000)
+      || (caption.start >= object.end && caption.start - object.end <= 4000)
+    ));
+    return nearbyTableCaption ? object : { ...object, kind: "figure" as const };
+  });
   const usedCaptions = new Set<string>();
   const manifestObjects: StructuredBindingObject[] = [];
   const ambiguous: string[] = [];

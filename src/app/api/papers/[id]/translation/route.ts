@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { ensureResearchFeatureSchema } from "@/lib/research-features";
-import { extractPaperAffiliations, extractPaperAuthorAffiliations, translationDirectory, translationSourceHash, translationUrlCandidates } from "@/lib/paper-translation";
+import { extractPaperAffiliations, extractPaperAuthorAffiliations, isLikelyChartTable, translationDirectory, translationSourceHash, translationUrlCandidates } from "@/lib/paper-translation";
 import { claimTranslationJob, expireStaleTranslationJob, failTranslationJob } from "@/lib/translation-job";
 import { decodePaperId } from "@/lib/paper-id";
 
@@ -90,7 +90,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
         ambiguous?: unknown;
         review_issues?: unknown;
         captions?: Array<{ id?: string; kind?: string; number?: number; text?: string }>;
-        objects?: Array<{ id?: string; kind?: string; captionId?: string; captionText?: string; captionKind?: string; captionNumber?: number; asset?: string; ambiguous?: boolean }>;
+        objects?: Array<{ id?: string; kind?: string; captionId?: string; captionText?: string; captionKind?: string; captionNumber?: number; asset?: string; text?: string; ambiguous?: boolean }>;
       } | null;
       if (structure) {
         const ambiguous = Array.isArray(structure.ambiguous) ? structure.ambiguous.filter((item): item is string => typeof item === "string") : [];
@@ -104,12 +104,13 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
         const objects = Array.isArray(structure.objects)
           ? structure.objects.filter((item) => item && (item.ambiguous || ambiguous.includes(String(item.id)))).slice(0, 50).map((item) => ({
             id: String(item.id || ""),
-            kind: String(item.kind || "unknown"),
+            kind: item.kind === "table" && isLikelyChartTable(String(item.text || "")) ? "figure" : String(item.kind || "unknown"),
             captionId: item.captionId || null,
             caption: item.captionText || null,
             captionKind: item.captionKind || null,
             captionNumber: item.captionNumber ?? null,
             asset: item.asset || null,
+            excerpt: String(item.text || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240),
             assetUrl: item.asset && String(item.asset).startsWith("assets/")
               ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?asset=${encodeURIComponent(String(item.asset))}`
               : null,
