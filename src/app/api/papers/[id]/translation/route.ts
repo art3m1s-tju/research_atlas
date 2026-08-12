@@ -89,22 +89,34 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
       const structure = JSON.parse(await fs.readFile(path.join(process.cwd(), row.output_dir, "structure_manifest.json"), "utf8").catch(() => "null")) as {
         ambiguous?: unknown;
         review_issues?: unknown;
-        objects?: Array<{ id?: string; kind?: string; captionText?: string; captionKind?: string; captionNumber?: number; asset?: string; ambiguous?: boolean }>;
+        captions?: Array<{ id?: string; kind?: string; number?: number; text?: string }>;
+        objects?: Array<{ id?: string; kind?: string; captionId?: string; captionText?: string; captionKind?: string; captionNumber?: number; asset?: string; ambiguous?: boolean }>;
       } | null;
       if (structure) {
         const ambiguous = Array.isArray(structure.ambiguous) ? structure.ambiguous.filter((item): item is string => typeof item === "string") : [];
         const reviewIssues = Array.isArray(structure.review_issues) ? structure.review_issues.filter((item): item is string => typeof item === "string") : [];
+        const captions = Array.isArray(structure.captions) ? structure.captions.filter((item) => item && item.id && item.kind).map((item) => ({
+          id: String(item.id),
+          kind: String(item.kind),
+          number: item.number ?? null,
+          text: item.text || "",
+        })) : [];
         const objects = Array.isArray(structure.objects)
           ? structure.objects.filter((item) => item && (item.ambiguous || ambiguous.includes(String(item.id)))).slice(0, 50).map((item) => ({
             id: String(item.id || ""),
             kind: String(item.kind || "unknown"),
+            captionId: item.captionId || null,
             caption: item.captionText || null,
             captionKind: item.captionKind || null,
             captionNumber: item.captionNumber ?? null,
             asset: item.asset || null,
+            assetUrl: item.asset && String(item.asset).startsWith("assets/")
+              ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?asset=${encodeURIComponent(String(item.asset))}`
+              : null,
+            options: captions.map((caption) => ({ ...caption, current: caption.id === item.captionId })),
           }))
           : [];
-        metadata = { ...(metadata || {}), structureReview: { ambiguous, reviewIssues, objects } };
+        metadata = { ...(metadata || {}), structureReview: { ambiguous, reviewIssues, captions, objects } };
       }
       const source = await fs.readFile(path.join(process.cwd(), row.output_dir, "source_structured.md"), "utf8").catch(() => "");
       if (source) {

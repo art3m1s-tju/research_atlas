@@ -1137,7 +1137,9 @@ async function main() {
     source_url: extracted.url,
   }, null, 2), "utf8");
   if (validationIssues.length) {
-    await fs.writeFile(temporaryCandidatePath, `${finalMarkdown}\n`, "utf8");
+    // Keep binding markers in the review copy. They are HTML comments in the
+    // reader, but let the human-review API move translated captions safely.
+    await fs.writeFile(temporaryCandidatePath, `${validationMarkdown}\n`, "utf8");
     await fs.rename(temporaryCandidatePath, candidatePath);
     await fs.rm(translationPath, { force: true });
   } else {

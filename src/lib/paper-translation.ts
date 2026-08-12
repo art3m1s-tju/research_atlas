@@ -1099,6 +1099,114 @@ function structuredWrappers(markdown: string) {
   }));
 }
 
+export type HumanBindingDecision = {
+  objectId: string;
+  captionId: string;
+  kind?: StructuredBindingKind;
+};
+
+function expectedCaptionKind(kind: StructuredBindingKind): CaptionKind {
+  return kind === "table" || kind === "table_image" ? "table" : "figure";
+}
+
+/** Apply explicit user decisions without allowing duplicate caption ownership. */
+export function applyHumanBindingDecisions(manifest: StructuredBindingManifest, decisions: HumanBindingDecision[]) {
+  const next = JSON.parse(JSON.stringify(manifest)) as StructuredBindingManifest;
+  const captions = new Map(next.captions.map((caption) => [caption.id, caption]));
+  const objects = new Map(next.objects.map((object) => [object.id, object]));
+  const changed = new Set<string>();
+  for (const decision of decisions) {
+    const object = objects.get(decision.objectId);
+    const caption = captions.get(decision.captionId);
+    if (!object) throw new Error(`找不到待复核对象：${decision.objectId}`);
+    if (!caption) throw new Error(`找不到题注：${decision.captionId}`);
+    const kind = decision.kind || object.kind;
+    if (!["figure", "table", "table_image"].includes(kind)) throw new Error(`不支持的对象类型：${kind}`);
+    if (expectedCaptionKind(kind) !== caption.kind) throw new Error(`${decision.objectId} 的对象类型与所选题注类型不匹配`);
+    object.kind = kind;
+    object.captionId = caption.id;
+    object.captionKind = caption.kind;
+    object.captionNumber = caption.number;
+    object.captionText = caption.text;
+    object.ambiguous = false;
+    changed.add(object.id);
+  }
+
+  const owners = new Map<string, string>();
+  for (const object of next.objects) {
+    if (!object.captionId) {
+      object.ambiguous = true;
+      continue;
+    }
+    const owner = owners.get(object.captionId);
+    if (owner && owner !== object.id) throw new Error(`题注 ${object.captionId} 不能同时绑定 ${owner} 和 ${object.id}`);
+    owners.set(object.captionId, object.id);
+    const caption = captions.get(object.captionId);
+    const kindMatches = Boolean(caption && expectedCaptionKind(object.kind) === caption.kind);
+    if (changed.has(object.id)) object.ambiguous = !kindMatches;
+  }
+  next.ambiguous = [
+    ...next.objects.filter((object) => object.ambiguous).map((object) => object.id),
+    ...next.captions.filter((caption) => !owners.has(caption.id)).map((caption) => caption.id),
+  ];
+  return next;
+}
+
+/** Move already-translated caption text between stable binding wrappers. */
+export function rebindTranslatedCandidate(markdown: string, previous: StructuredBindingManifest, next: StructuredBindingManifest) {
+  const wrappers = structuredWrappers(markdown);
+  if (!wrappers.length) {
+    // Older candidate files were written after binding markers were stripped.
+    // Use source caption order as a compatibility fallback so those files can
+    // still be corrected once by a human instead of forcing a full re-run.
+    const previousCaptions = [...previous.captions].sort((left, right) => left.start - right.start);
+    const candidateCaptions = structuredCaptionMatches(markdown);
+    if (previousCaptions.length !== candidateCaptions.length) return markdown;
+    const translatedCaptionText = new Map(previousCaptions.map((caption, index) => [caption.id, candidateCaptions[index].text]));
+    const captionIndex = new Map(previousCaptions.map((caption, index) => [caption.id, index]));
+    const nearestCaptionId = (object: StructuredBindingObject) => {
+      if (object.captionId) return object.captionId;
+      const expectedKind = expectedCaptionKind(object.kind);
+      return previous.captions
+        .filter((caption) => caption.kind === expectedKind)
+        .map((caption) => ({
+          caption,
+          distance: caption.start >= object.end ? caption.start - object.end : object.start - caption.end,
+          directional: object.kind === "table_image" || (expectedKind === "table" ? caption.end <= object.start : caption.start >= object.end),
+        }))
+        .filter((item) => item.directional && item.distance >= 0)
+        .sort((left, right) => left.distance - right.distance)[0]?.caption.id;
+    };
+    const replacements = new Map<number, string>();
+    for (const previousObject of previous.objects) {
+      const index = captionIndex.get(nearestCaptionId(previousObject) || "");
+      const nextObject = next.objects.find((object) => object.id === previousObject.id);
+      const replacement = nextObject?.captionId ? translatedCaptionText.get(nextObject.captionId) : undefined;
+      if (index !== undefined && replacement) replacements.set(index, replacement);
+    }
+    return [...candidateCaptions].sort((left, right) => right.start - left.start).reduce((result, caption, index) => {
+      const replacement = replacements.get(candidateCaptions.length - 1 - index);
+      return replacement ? `${result.slice(0, caption.start)}${replacement}${result.slice(caption.end)}` : result;
+    }, markdown);
+  }
+  const captionTextById = new Map<string, string>();
+  for (const wrapper of wrappers) {
+    const object = previous.objects.find((item) => item.id === wrapper.id);
+    const caption = structuredCaptionMatches(wrapper.text)[0];
+    if (object?.captionId && caption) captionTextById.set(object.captionId, caption.text);
+  }
+  return markdown.replace(BINDING_BLOCK_PATTERN, (block) => {
+    const marker = block.match(/ATLAS_BIND_(figure|table|table_image)-(\d{3})/i);
+    if (!marker) return block;
+    const objectId = `${marker[1].toLowerCase()}-${marker[2]}`;
+    const object = next.objects.find((item) => item.id === objectId);
+    const currentCaption = structuredCaptionMatches(block)[0];
+    const targetCaption = object?.captionId ? captionTextById.get(object.captionId) : undefined;
+    if (!currentCaption || !targetCaption || currentCaption.text === targetCaption) return block;
+    return `${block.slice(0, currentCaption.start)}${targetCaption}${block.slice(currentCaption.end)}`;
+  });
+}
+
 /** Fail closed when a model moves a caption to another visual object. */
 export function validateStructuredBindings(source: string, translated: string) {
   const issues: string[] = [];

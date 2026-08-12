@@ -11,7 +11,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
 type PaperMeta = { title: string; authors: string; venue: string; year: number | null };
-type TranslationMeta = { source_url?: string | null; title_zh?: string | null; title_original?: string | null; authors?: string | null; author_affiliations?: Array<{ name: string; affiliations: number[] }>; affiliations?: Array<{ index: number; text: string }>; structureReview?: { ambiguous?: string[]; reviewIssues?: string[]; objects?: Array<{ id: string; kind: string; caption?: string | null; captionKind?: string | null; captionNumber?: number | null; asset?: string | null }> } };
+type TranslationMeta = { source_url?: string | null; title_zh?: string | null; title_original?: string | null; authors?: string | null; author_affiliations?: Array<{ name: string; affiliations: number[] }>; affiliations?: Array<{ index: number; text: string }>; structureReview?: { ambiguous?: string[]; reviewIssues?: string[]; captions?: Array<{ id: string; kind: string; number: number | null; text: string }>; objects?: Array<{ id: string; kind: string; captionId?: string | null; caption?: string | null; captionKind?: string | null; captionNumber?: number | null; asset?: string | null; assetUrl?: string | null; options?: Array<{ id: string; kind: string; number: number | null; text: string; current?: boolean }> }> } };
 
 const translationSanitizeSchema = {
   ...defaultSchema,
@@ -92,6 +92,9 @@ export default function TranslationReader({ id }: { id: string }) {
   const [showOriginal, setShowOriginal] = useState(false);
   const [imagePreview, setImagePreview] = useState<{ src: string; alt: string } | null>(null);
   const [reviewMode, setReviewMode] = useState(false);
+  const [reviewSelections, setReviewSelections] = useState<Record<string, { captionId: string; kind: string }>>({});
+  const [reviewSaving, setReviewSaving] = useState(false);
+  const [reviewMessage, setReviewMessage] = useState("");
   const canonicalId = decodePaperId(id);
 
   useEffect(() => {
@@ -112,8 +115,35 @@ export default function TranslationReader({ id }: { id: string }) {
       setPaper(paperData.paper || null);
       setTranslationMeta(translationData.translation || null);
       setReviewMode(translationResult.review || translationData.translation?.status === "needs_review");
+      const reviewObjects = translationData.translation?.structureReview?.objects || [];
+      setReviewSelections(Object.fromEntries(reviewObjects.filter((item: any) => item.captionId).map((item: any) => [item.id, { captionId: item.captionId, kind: item.kind }])));
     }).catch((reason) => setError(reason instanceof Error ? reason.message : "译文加载失败")).finally(() => setLoading(false));
   }, [id]);
+
+  async function saveReviewDecisions() {
+    const decisions = Object.entries(reviewSelections).filter(([, value]) => value.captionId).map(([objectId, value]) => ({ objectId, captionId: value.captionId, kind: value.kind }));
+    if (!decisions.length) {
+      setReviewMessage("请至少选择一个题注配对。");
+      return;
+    }
+    setReviewSaving(true);
+    setReviewMessage("");
+    try {
+      const response = await fetch(`/api/papers/${encodeURIComponent(canonicalId)}/translation/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decisions }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "人工配对保存失败");
+      setReviewMessage(data.message || "人工配对已保存");
+      window.location.reload();
+    } catch (reason) {
+      setReviewMessage(reason instanceof Error ? reason.message : "人工配对保存失败");
+    } finally {
+      setReviewSaving(false);
+    }
+  }
 
   if (loading) return <main className="mx-auto max-w-4xl p-8 text-gray-500">正在加载中文译文...</main>;
   if (error) return <main className="mx-auto max-w-4xl p-8"><a href={`/papers/${encodeURIComponent(canonicalId)}`} className="text-blue-600 hover:underline">← 返回论文详情</a><p className="mt-6 rounded-lg bg-red-50 p-4 text-red-700">{error}</p></main>;
@@ -130,7 +160,7 @@ export default function TranslationReader({ id }: { id: string }) {
           {paper && <div className="paper-meta mt-4"><p className="paper-authors"><span className="paper-meta-label">作者</span>{renderAuthors(translationMeta?.authors || paper.authors, translationMeta?.author_affiliations)}</p>{translationMeta?.affiliations?.length ? <div className="paper-affiliations">{translationMeta.affiliations.map((affiliation) => <p className="paper-affiliation" key={`${affiliation.index}-${affiliation.text}`}><sup>{affiliation.index}</sup>{affiliation.text}</p>)}</div> : null}<p className="paper-publication">{paper.venue || "发表渠道待核实"} · {paper.year || "年份未知"}</p></div>}
         </header>
         <div className="px-6 py-8 sm:px-10 sm:py-10">
-          {reviewMode && <section className="mb-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><h2 className="text-lg font-semibold">待人工复核译文</h2><p className="mt-2 text-sm leading-6">这份译文已经生成，可以正常阅读，但部分图表、题注或结构关系没有被系统自动确认。请结合原文 PDF 判断，不要把未确认内容直接当作最终结论。</p>{translationMeta?.structureReview?.objects?.length ? <div className="mt-3 rounded-lg bg-white/70 p-3 text-xs leading-5"><p className="font-medium">待判断对象</p><ul className="mt-1 list-disc pl-5">{translationMeta.structureReview.objects.slice(0, 12).map((item) => <li key={item.id}>{item.id}{item.caption ? `：${item.caption}` : ""}</li>)}</ul></div> : null}</section>}
+          {reviewMode && <section className="mb-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><h2 className="text-lg font-semibold">待人工复核译文</h2><p className="mt-2 text-sm leading-6">这份译文已经生成，可以正常阅读，但部分图表、题注或结构关系没有被系统自动确认。请结合原文 PDF 判断，不要把未确认内容直接当作最终结论。</p>{translationMeta?.structureReview?.objects?.length ? <div className="mt-3 space-y-3 rounded-lg bg-white/70 p-3 text-xs leading-5"><p className="font-medium">选择正确的对象和题注配对</p>{translationMeta.structureReview.objects.slice(0, 12).map((item) => { const selection = reviewSelections[item.id] || { captionId: item.captionId || "", kind: item.kind }; return <div key={item.id} className="rounded-lg border border-amber-100 bg-white p-3"><div className="flex flex-wrap items-center gap-3"><strong>{item.id}</strong>{item.assetUrl && <img src={item.assetUrl} alt={item.id} className="max-h-24 max-w-40 rounded border border-gray-200 object-contain" />}</div><div className="mt-2 grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)]"><label className="self-center text-gray-600">对象类型</label><select value={selection.kind} onChange={(event) => setReviewSelections((current) => ({ ...current, [item.id]: { captionId: selection.captionId, kind: event.target.value } }))} className="rounded border border-gray-300 bg-white px-2 py-1"><option value="figure">图片/图</option><option value="table">原生表格</option><option value="table_image">表格截图</option></select><label className="self-center text-gray-600">对应题注</label><select value={selection.captionId} onChange={(event) => setReviewSelections((current) => ({ ...current, [item.id]: { captionId: event.target.value, kind: selection.kind } }))} className="min-w-0 rounded border border-gray-300 bg-white px-2 py-1"><option value="">请选择题注</option>{(item.options || []).map((option) => <option key={option.id} value={option.id}>{option.kind === "figure" ? "图" : "表"} {option.number ?? "?"}：{option.text.slice(0, 100)}{option.current ? "（当前）" : ""}</option>)}</select></div></div>; })}<div className="flex flex-wrap items-center gap-3"><button type="button" onClick={saveReviewDecisions} disabled={reviewSaving} className="rounded-md bg-amber-600 px-3 py-1.5 font-medium text-white hover:bg-amber-700 disabled:opacity-50">{reviewSaving ? "保存中..." : "保存人工配对"}</button>{reviewMessage && <span className="text-amber-800">{reviewMessage}</span>}</div></div> : null}</section>}
            {showOriginal && <section className="mb-8 rounded-xl border border-gray-200 bg-gray-50 p-3"><div className="mb-3 flex items-center justify-between gap-2"><h2 className="font-semibold text-gray-900">原文 PDF 对照</h2>{translationMeta?.source_url && <a href={translationMeta.source_url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">新窗口打开</a>}</div>{translationMeta?.source_url ? <iframe title="论文原文 PDF" src={translationMeta.source_url} className="h-[70vh] w-full rounded-lg border border-gray-300 bg-white" /> : <p className="text-sm text-gray-500">原文 PDF 地址暂不可用。</p>}</section>}
           <div className="translation-prose min-w-0">
             <ReactMarkdown

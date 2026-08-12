@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assessTextExtractionCompleteness,
+  applyHumanBindingDecisions,
   extractPaperAffiliations,
   extractPaperAuthorAffiliations,
   annotateStructuredBindings,
@@ -23,6 +24,7 @@ import {
   protectStructuredMarkdown,
   restoreHeadingLayout,
   restoreBindingOrder,
+  rebindTranslatedCandidate,
   restoreCaptionSequence,
   restoreStructuredMarkdown,
   restoreTableLayout,
@@ -546,6 +548,30 @@ test("ambiguous bindings still produce a readable candidate source", () => {
   const candidate = stripStructuredBindingMarkers(annotateStructuredBindings(source, manifest));
   assert.match(candidate, /assets\/figure-1\.png/);
   assert.match(candidate, /Table 1: OCR caption/);
+});
+
+test("human binding decisions swap translated captions by stable object IDs", () => {
+  const source = [
+    "![Image](assets/a.png)",
+    "Figure 1: First image",
+    "![Image](assets/b.png)",
+    "Figure 2: Second image",
+  ].join("\n\n");
+  const previous = buildStructuredBindingManifest(source);
+  const candidate = annotateStructuredBindings(source, previous).replaceAll("Figure", "图");
+  const next = applyHumanBindingDecisions(previous, [
+    { objectId: "figure-001", captionId: "caption-002", kind: "figure" },
+    { objectId: "figure-002", captionId: "caption-001", kind: "figure" },
+  ]);
+  const rebound = rebindTranslatedCandidate(candidate, previous, next);
+  const first = rebound.indexOf("figure-001");
+  const second = rebound.indexOf("figure-002");
+  assert.ok(first >= 0 && second > first);
+  assert.ok(rebound.slice(first, second).includes("图 2: Second image"));
+  assert.ok(rebound.slice(second).includes("图 1: First image"));
+  const reboundLegacy = rebindTranslatedCandidate(stripStructuredBindingMarkers(candidate), previous, next);
+  assert.ok(reboundLegacy.indexOf("图 2: Second image") < reboundLegacy.indexOf("图 1: First image"));
+  assert.equal(next.ambiguous.length, 0);
 });
 
 test("extractPaperAffiliations parses inline superscript organisations", () => {
