@@ -929,7 +929,7 @@ async function main() {
   const glossary = existsSync(terminologyPath) ? await fs.readFile(terminologyPath, "utf8") : "# 术语表\n\n以论文原文为准。\n";
   const sourceHash = translationSourceHash(paper, {
     model,
-    parser: process.env.TRANSLATION_PARSER || "auto",
+    parser: process.env.TRANSLATION_CLOUD_ONLY !== "0" ? "paddleocr-only" : process.env.TRANSLATION_PARSER || "paddleocr-only",
     parserVersion: process.env.TRANSLATION_PARSER_VERSION || "",
     formulaEnabled: process.env.TRANSLATION_ENABLE_FORMULA || "1",
     ocrEnabled: process.env.TRANSLATION_ENABLE_OCR || "0",
@@ -1011,20 +1011,18 @@ async function main() {
     reviewStructuredBindings(bindingManifest, outputDirectory),
   ]);
   applySemanticBindingDecisions(bindingManifest, semanticReview.decisions);
-  if (bindingManifest.ambiguous.length) {
-    assertTranslationOwnership(db, paperId, jobToken, leaseMinutes);
-    await fs.writeFile(path.join(outputDirectory, "structure_manifest.json"), JSON.stringify({ ...bindingManifest, semantic_review: semanticReview, phase: "binding_review" }, null, 2), "utf8");
-    throw new Error(`STRUCTURE_QUALITY:图表绑定仍有 ${bindingManifest.ambiguous.length} 个歧义对象，未发布译文`);
-  }
   const boundSource = normalizeBoundCaptionPlacement(preparedSource, bindingManifest);
   const resolvedManifest = buildStructuredBindingManifest(boundSource);
   applySemanticBindingDecisions(resolvedManifest, semanticReview.decisions);
-  if (resolvedManifest.ambiguous.length) {
-    assertTranslationOwnership(db, paperId, jobToken, leaseMinutes);
-    await fs.writeFile(path.join(outputDirectory, "structure_manifest.json"), JSON.stringify({ ...resolvedManifest, semantic_review: semanticReview, phase: "binding_review" }, null, 2), "utf8");
-    throw new Error(`STRUCTURE_QUALITY:图表绑定在重新排版后仍有 ${resolvedManifest.ambiguous.length} 个歧义对象，未发布译文`);
+  const unresolvedBindingIds = [...new Set(resolvedManifest.ambiguous)];
+  let source = boundSource;
+  let bindingAnnotationError = "";
+  try {
+    source = annotateStructuredBindings(boundSource, resolvedManifest);
+  } catch (error) {
+    bindingAnnotationError = error instanceof Error ? error.message : String(error);
+    console.warn(`  图表绑定无法完整加固，继续生成待复核译文：${bindingAnnotationError}`);
   }
-  const source = annotateStructuredBindings(boundSource, resolvedManifest);
   const documentLayout = await loadDocumentLayout(outputDirectory, extractedManifest);
   const documentIR = buildDocumentIR(boundSource, resolvedManifest, documentLayout);
   const chunkChars = Math.max(3000, Math.min(9000, Number(process.env.TRANSLATION_CHUNK_CHARS || 6000)));
@@ -1095,6 +1093,8 @@ async function main() {
   const translatedBodyWithBindings = numberReferenceSection(normalizeTranslatedStructureLabels(normalizeTranslatedMarkdown(restoreHeadingLayout(source, normalizeExtraNumberedHeadings(source, restoreBindingOrder(source, results.join("\n\n").replace(/\n{3,}/g, "\n\n").trim())))), true));
   const validationMarkdown = `# ${translatedTitle}\n\n${translatedBodyWithBindings}`.trim();
   const validationIssues = validateTranslatedMarkdown(source, validationMarkdown, translatedTitle);
+  if (unresolvedBindingIds.length) validationIssues.push(`图表绑定需要人工复核：${unresolvedBindingIds.join("、")}`);
+  if (bindingAnnotationError) validationIssues.push(`图表绑定加固失败：${bindingAnnotationError}`);
   const pdfAuthorNames = extractPaperAuthorAffiliations(extracted.text).map((entry) => entry.name);
   const dbAuthorNames = String(paper.authors || "").split(/[,;]/).map((name) => name.trim()).filter(Boolean);
   const authorConflict = pdfAuthorNames.length > 0 && dbAuthorNames.length > 0
@@ -1118,7 +1118,14 @@ async function main() {
   const temporaryTranslationPath = `${translationPath}.tmp-${process.pid}`;
   const temporaryCandidatePath = `${candidatePath}.tmp-${process.pid}`;
   const temporaryReportPath = `${reportPath}.tmp-${process.pid}`;
-  await fs.writeFile(path.join(outputDirectory, "structure_manifest.json"), JSON.stringify({ ...resolvedManifest, document_ir: documentIR, parser_manifest: extractedManifest, semantic_review: semanticReview }, null, 2), "utf8");
+  await fs.writeFile(path.join(outputDirectory, "structure_manifest.json"), JSON.stringify({
+    ...resolvedManifest,
+    review_required: validationIssues.length > 0,
+    review_issues: validationIssues,
+    document_ir: documentIR,
+    parser_manifest: extractedManifest,
+    semantic_review: semanticReview,
+  }, null, 2), "utf8");
   await fs.writeFile(path.join(outputDirectory, "translation_meta.json"), JSON.stringify({
     title_original: paper.title,
     title_zh: translatedTitle,

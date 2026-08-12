@@ -15,7 +15,7 @@ function translationRuntime() {
   const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
   return {
     model: process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-    parser: process.env.TRANSLATION_PARSER || "auto",
+    parser: process.env.TRANSLATION_CLOUD_ONLY !== "0" ? "paddleocr-only" : process.env.TRANSLATION_PARSER || "paddleocr-only",
     parserVersion: process.env.TRANSLATION_PARSER_VERSION || "",
     formulaEnabled: process.env.TRANSLATION_ENABLE_FORMULA || "1",
     ocrEnabled: process.env.TRANSLATION_ENABLE_OCR || "0",
@@ -80,12 +80,32 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
       if (file === "translation_candidate.md" && row.status !== "needs_review") return NextResponse.json({ error: "待复核译文尚未生成" }, { status: 404 });
       const content = await fs.readFile(path.join(process.cwd(), row.output_dir, file), "utf8").catch(() => null);
       if (content === null) return NextResponse.json({ error: "翻译文件不存在" }, { status: 404 });
-      const renderedContent = file === "translation_zh.md" ? rewriteAssetReferences(content, id) : content;
+      const renderedContent = ["translation_zh.md", "translation_candidate.md"].includes(file) ? rewriteAssetReferences(content, id) : content;
       return new NextResponse(renderedContent, { headers: { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `inline; filename="${file}"` } });
     }
     let metadata: Record<string, unknown> | null = null;
     if (row?.output_dir) {
       metadata = JSON.parse(await fs.readFile(path.join(process.cwd(), row.output_dir, "translation_meta.json"), "utf8").catch(() => "null")) as Record<string, unknown> | null;
+      const structure = JSON.parse(await fs.readFile(path.join(process.cwd(), row.output_dir, "structure_manifest.json"), "utf8").catch(() => "null")) as {
+        ambiguous?: unknown;
+        review_issues?: unknown;
+        objects?: Array<{ id?: string; kind?: string; captionText?: string; captionKind?: string; captionNumber?: number; asset?: string; ambiguous?: boolean }>;
+      } | null;
+      if (structure) {
+        const ambiguous = Array.isArray(structure.ambiguous) ? structure.ambiguous.filter((item): item is string => typeof item === "string") : [];
+        const reviewIssues = Array.isArray(structure.review_issues) ? structure.review_issues.filter((item): item is string => typeof item === "string") : [];
+        const objects = Array.isArray(structure.objects)
+          ? structure.objects.filter((item) => item && (item.ambiguous || ambiguous.includes(String(item.id)))).slice(0, 50).map((item) => ({
+            id: String(item.id || ""),
+            kind: String(item.kind || "unknown"),
+            caption: item.captionText || null,
+            captionKind: item.captionKind || null,
+            captionNumber: item.captionNumber ?? null,
+            asset: item.asset || null,
+          }))
+          : [];
+        metadata = { ...(metadata || {}), structureReview: { ambiguous, reviewIssues, objects } };
+      }
       const source = await fs.readFile(path.join(process.cwd(), row.output_dir, "source_structured.md"), "utf8").catch(() => "");
       if (source) {
         const affiliations = extractPaperAffiliations(source, paper.title);
@@ -101,7 +121,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     return NextResponse.json({ translation: row ? {
       ...row,
       ...(metadata || {}),
-      previewUrl: row.status === "completed" ? `/papers/${encodeURIComponent(decodePaperId(id))}/translation` : null,
+      previewUrl: ["completed", "needs_review"].includes(row.status) ? `/papers/${encodeURIComponent(decodePaperId(id))}/translation` : null,
       markdownUrl: row.status === "completed" ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_zh.md` : null,
       candidateUrl: row.status === "needs_review" && row.output_dir && existsSync(path.join(process.cwd(), row.output_dir, "translation_candidate.md"))
         ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_candidate.md`

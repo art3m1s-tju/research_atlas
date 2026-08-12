@@ -539,6 +539,15 @@ test("objects without captions fail closed as ambiguous instead of publishing", 
   assert.ok(manifest.objects.every((object) => object.ambiguous));
 });
 
+test("ambiguous bindings still produce a readable candidate source", () => {
+  const source = "![Image](assets/figure-1.png)\n\nTable 1: OCR caption";
+  const manifest = buildStructuredBindingManifest(source);
+  assert.ok(manifest.ambiguous.includes("figure-001"));
+  const candidate = stripStructuredBindingMarkers(annotateStructuredBindings(source, manifest));
+  assert.match(candidate, /assets\/figure-1\.png/);
+  assert.match(candidate, /Table 1: OCR caption/);
+});
+
 test("extractPaperAffiliations parses inline superscript organisations", () => {
   const source = [
     "# World4Drive: Test",
