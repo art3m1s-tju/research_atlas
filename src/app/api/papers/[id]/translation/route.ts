@@ -118,12 +118,14 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
         }
       }
     }
+    const formalTranslationExists = Boolean(row?.output_dir && existsSync(path.join(process.cwd(), row.output_dir, "translation_zh.md")));
+    const candidateTranslationExists = Boolean(row?.status === "needs_review" && row.output_dir && existsSync(path.join(process.cwd(), row.output_dir, "translation_candidate.md")));
     return NextResponse.json({ translation: row ? {
       ...row,
       ...(metadata || {}),
-      previewUrl: ["completed", "needs_review"].includes(row.status) ? `/papers/${encodeURIComponent(decodePaperId(id))}/translation` : null,
-      markdownUrl: row.status === "completed" ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_zh.md` : null,
-      candidateUrl: row.status === "needs_review" && row.output_dir && existsSync(path.join(process.cwd(), row.output_dir, "translation_candidate.md"))
+      previewUrl: ((row.status === "completed" && formalTranslationExists) || candidateTranslationExists) ? `/papers/${encodeURIComponent(decodePaperId(id))}/translation` : null,
+      markdownUrl: row.status === "completed" && formalTranslationExists ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_zh.md` : null,
+      candidateUrl: candidateTranslationExists
         ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_candidate.md`
         : null,
     } : null });
