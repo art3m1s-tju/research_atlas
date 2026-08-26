@@ -11,7 +11,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
 type PaperMeta = { title: string; authors: string; venue: string; year: number | null };
-type TranslationMeta = { source_url?: string | null; title_zh?: string | null; title_original?: string | null; authors?: string | null; author_affiliations?: Array<{ name: string; affiliations: number[] }>; affiliations?: Array<{ index: number; text: string }>; structureReview?: { ambiguous?: string[]; reviewIssues?: string[]; captions?: Array<{ id: string; kind: string; number: number | null; text: string }>; objects?: Array<{ id: string; kind: string; captionId?: string | null; caption?: string | null; captionKind?: string | null; captionNumber?: number | null; asset?: string | null; assetUrl?: string | null; excerpt?: string; options?: Array<{ id: string; kind: string; number: number | null; text: string; current?: boolean }> }> } };
+type TranslationMeta = { engine?: string; source_url?: string | null; title_zh?: string | null; title_original?: string | null; authors?: string | null; author_affiliations?: Array<{ name: string; affiliations: number[] }>; affiliations?: Array<{ index: number; text: string }>; pdfMonoUrl?: string | null; pdfDualUrl?: string | null; structureReview?: { ambiguous?: string[]; reviewIssues?: string[]; captions?: Array<{ id: string; kind: string; number: number | null; text: string }>; objects?: Array<{ id: string; kind: string; captionId?: string | null; caption?: string | null; captionKind?: string | null; captionNumber?: number | null; asset?: string | null; assetUrl?: string | null; excerpt?: string; options?: Array<{ id: string; kind: string; number: number | null; text: string; current?: boolean }> }> } };
 
 const translationSanitizeSchema = {
   ...defaultSchema,
@@ -90,6 +90,7 @@ export default function TranslationReader({ id }: { id: string }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [showOriginal, setShowOriginal] = useState(false);
+  const [pdfMode, setPdfMode] = useState<"mono" | "dual">("mono");
   const [imagePreview, setImagePreview] = useState<{ src: string; alt: string } | null>(null);
   const [reviewMode, setReviewMode] = useState(false);
   const [reviewSelections, setReviewSelections] = useState<Record<string, { captionId: string; kind: string }>>({});
@@ -98,26 +99,40 @@ export default function TranslationReader({ id }: { id: string }) {
   const canonicalId = decodePaperId(id);
 
   useEffect(() => {
-    const encodedId = encodeURIComponent(decodePaperId(id));
-    const translationContent = (async () => {
-      const formal = await fetch(`/api/papers/${encodedId}/translation?file=translation_zh.md`);
-      if (formal.ok) return { content: await formal.text(), review: false };
-      const candidate = await fetch(`/api/papers/${encodedId}/translation?file=translation_candidate.md`);
-      if (!candidate.ok) throw new Error((await formal.text()) || "译文尚未生成");
-      return { content: await candidate.text(), review: true };
-    })();
-    Promise.all([
-      translationContent,
-      fetch(`/api/papers/${encodedId}`).then((response) => response.json()),
-      fetch(`/api/papers/${encodedId}/translation`, { cache: "no-store" }).then((response) => response.json()),
-    ]).then(([translationResult, paperData, translationData]) => {
-      setMarkdown(translationResult.content);
+    let cancelled = false;
+    const load = async () => {
+      const encodedId = encodeURIComponent(decodePaperId(id));
+      const [paperResponse, translationResponse] = await Promise.all([
+        fetch(`/api/papers/${encodedId}`),
+        fetch(`/api/papers/${encodedId}/translation`, { cache: "no-store" }),
+      ]);
+      const paperData = await paperResponse.json();
+      const translationData = await translationResponse.json();
+      const translation = translationData.translation;
+      let content = "";
+      let review = translation?.status === "needs_review";
+      if (translation?.engine === "pdf2zh-next") {
+        if (!translation.pdfMonoUrl && !translation.pdfDualUrl) throw new Error("pdf2zh-next 尚未生成可预览的 PDF");
+      } else {
+        const formal = await fetch(`/api/papers/${encodedId}/translation?file=translation_zh.md`);
+        if (formal.ok) content = await formal.text();
+        else {
+          const candidate = await fetch(`/api/papers/${encodedId}/translation?file=translation_candidate.md`);
+          if (!candidate.ok) throw new Error((await formal.text()) || "译文尚未生成");
+          content = await candidate.text();
+          review = true;
+        }
+      }
+      if (cancelled) return;
+      setMarkdown(content);
       setPaper(paperData.paper || null);
-      setTranslationMeta(translationData.translation || null);
-      setReviewMode(translationResult.review || translationData.translation?.status === "needs_review");
-      const reviewObjects = translationData.translation?.structureReview?.objects || [];
+      setTranslationMeta(translation || null);
+      setReviewMode(review);
+      const reviewObjects = translation?.structureReview?.objects || [];
       setReviewSelections(Object.fromEntries(reviewObjects.filter((item: any) => item.captionId).map((item: any) => [item.id, { captionId: item.captionId, kind: item.kind }])));
-    }).catch((reason) => setError(reason instanceof Error ? reason.message : "译文加载失败")).finally(() => setLoading(false));
+    };
+    load().catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "译文加载失败"); }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [id]);
 
   async function saveReviewDecisions() {
@@ -145,6 +160,10 @@ export default function TranslationReader({ id }: { id: string }) {
     }
   }
 
+  const selectedPdfUrl = pdfMode === "dual"
+    ? translationMeta?.pdfDualUrl || translationMeta?.pdfMonoUrl
+    : translationMeta?.pdfMonoUrl || translationMeta?.pdfDualUrl;
+
   if (loading) return <main className="mx-auto max-w-4xl p-8 text-gray-500">正在加载中文译文...</main>;
   if (error) return <main className="mx-auto max-w-4xl p-8"><a href={`/papers/${encodeURIComponent(canonicalId)}`} className="text-blue-600 hover:underline">← 返回论文详情</a><p className="mt-6 rounded-lg bg-red-50 p-4 text-red-700">{error}</p></main>;
 
@@ -154,7 +173,7 @@ export default function TranslationReader({ id }: { id: string }) {
         <header className="border-b border-gray-200 px-6 py-6 sm:px-10">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <a href={`/papers/${encodeURIComponent(canonicalId)}`} className="text-sm text-blue-600 hover:underline">← 返回论文详情</a>
-            <div className="flex flex-wrap gap-2"><button type="button" onClick={() => setShowOriginal((value) => !value)} className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100">{showOriginal ? "收起原文 PDF" : "查看原文 PDF"}</button><a href={`/api/papers/${encodeURIComponent(canonicalId)}/translation?file=${reviewMode ? "translation_candidate.md" : "translation_zh.md"}`} className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50">下载 {reviewMode ? "待复核译文" : "Markdown"}</a></div>
+             <div className="flex flex-wrap gap-2"><button type="button" onClick={() => setShowOriginal((value) => !value)} className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100">{showOriginal ? "收起原文 PDF" : "查看原文 PDF"}</button>{translationMeta?.engine === "pdf2zh-next" ? <><a href={translationMeta.pdfMonoUrl || "#"} className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50">下载单语 PDF</a>{translationMeta.pdfDualUrl && <a href={translationMeta.pdfDualUrl} className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50">下载双语 PDF</a>}</> : <a href={`/api/papers/${encodeURIComponent(canonicalId)}/translation?file=${reviewMode ? "translation_candidate.md" : "translation_zh.md"}`} className="rounded-md border border-gray-300 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50">下载 {reviewMode ? "待复核译文" : "Markdown"}</a>}</div>
           </div>
           <h1 className="paper-title mt-6 font-bold leading-tight text-gray-900">{translationMeta?.title_zh || paper?.title || "中文论文译文"}</h1>
           {paper && <div className="paper-meta mt-4"><p className="paper-authors"><span className="paper-meta-label">作者</span>{renderAuthors(translationMeta?.authors || paper.authors, translationMeta?.author_affiliations)}</p>{translationMeta?.affiliations?.length ? <div className="paper-affiliations">{translationMeta.affiliations.map((affiliation) => <p className="paper-affiliation" key={`${affiliation.index}-${affiliation.text}`}><sup>{affiliation.index}</sup>{affiliation.text}</p>)}</div> : null}<p className="paper-publication">{paper.venue || "发表渠道待核实"} · {paper.year || "年份未知"}</p></div>}
@@ -162,26 +181,26 @@ export default function TranslationReader({ id }: { id: string }) {
         <div className="px-6 py-8 sm:px-10 sm:py-10">
           {reviewMode && <section className="mb-8 rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900"><h2 className="text-lg font-semibold">待人工复核译文</h2><p className="mt-2 text-sm leading-6">这份译文已经生成，可以正常阅读，但部分图表、题注或结构关系没有被系统自动确认。请结合原文 PDF 判断，不要把未确认内容直接当作最终结论。</p>{translationMeta?.structureReview?.objects?.length ? <div className="mt-3 space-y-3 rounded-lg bg-white/70 p-3 text-xs leading-5"><p className="font-medium">选择正确的对象和题注配对</p>{translationMeta.structureReview.objects.slice(0, 12).map((item) => { const selection = reviewSelections[item.id] || { captionId: item.captionId || "", kind: item.kind }; return <div key={item.id} className="rounded-lg border border-amber-100 bg-white p-3"><div className="flex flex-wrap items-center gap-3"><strong>{item.id}</strong><span className="rounded bg-amber-100 px-2 py-0.5 text-amber-800">{item.kind === "figure" && !item.assetUrl ? "疑似图表数据" : item.kind === "figure" ? "图片/图" : item.kind === "table_image" ? "表格截图" : "原生表格"}</span>{item.assetUrl && <img src={item.assetUrl} alt={item.id} className="max-h-24 max-w-40 rounded border border-gray-200 object-contain" />}</div>{item.excerpt && <p className="mt-2 rounded bg-gray-50 p-2 text-gray-600">{item.excerpt}</p>}<div className="mt-2 grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)]"><label className="self-center text-gray-600">对象类型</label><select value={selection.kind} onChange={(event) => setReviewSelections((current) => ({ ...current, [item.id]: { captionId: selection.captionId, kind: event.target.value } }))} className="rounded border border-gray-300 bg-white px-2 py-1"><option value="figure">图片/图</option><option value="table">原生表格</option><option value="table_image">表格截图</option></select><label className="self-center text-gray-600">对应题注</label><select value={selection.captionId} onChange={(event) => setReviewSelections((current) => ({ ...current, [item.id]: { captionId: event.target.value, kind: selection.kind } }))} className="min-w-0 rounded border border-gray-300 bg-white px-2 py-1"><option value="">请选择题注</option>{(item.options || []).map((option) => <option key={option.id} value={option.id}>{option.kind === "figure" ? "图" : "表"} {option.number ?? "?"}：{option.text.slice(0, 100)}{option.current ? "（当前）" : ""}</option>)}</select></div></div>; })}<div className="flex flex-wrap items-center gap-3"><button type="button" onClick={saveReviewDecisions} disabled={reviewSaving} className="rounded-md bg-amber-600 px-3 py-1.5 font-medium text-white hover:bg-amber-700 disabled:opacity-50">{reviewSaving ? "保存中..." : "保存人工配对"}</button>{reviewMessage && <span className="text-amber-800">{reviewMessage}</span>}</div></div> : null}</section>}
            {showOriginal && <section className="mb-8 rounded-xl border border-gray-200 bg-gray-50 p-3"><div className="mb-3 flex items-center justify-between gap-2"><h2 className="font-semibold text-gray-900">原文 PDF 对照</h2>{translationMeta?.source_url && <a href={translationMeta.source_url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">新窗口打开</a>}</div>{translationMeta?.source_url ? <iframe title="论文原文 PDF" src={translationMeta.source_url} className="h-[70vh] w-full rounded-lg border border-gray-300 bg-white" /> : <p className="text-sm text-gray-500">原文 PDF 地址暂不可用。</p>}</section>}
-          <div className="translation-prose min-w-0">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeRaw, [rehypeSanitize, translationSanitizeSchema], rehypeKatex]}
-              components={{
-                p: ({ children }) => {
-                  const text = plainText(children).trim();
-                  const caption = /^\*\*(?:图|表)\s*\d+\s*[.:：]\*\*/i.test(text) || /^(?:Figure|Fig\.?|Table|图|表)\s*\d+(?:\s*[.:：-]|\s|$)/i.test(text);
-                  return <p className={caption ? "paper-caption" : undefined}>{children}</p>;
-                },
-                table: ({ children }) => <div className="paper-table-wrap"><table>{children}</table></div>,
-                th: ({ children, ...props }) => <th {...props}>{renderTableCellMath(children)}</th>,
-                td: ({ children, ...props }) => <td {...props}>{renderTableCellMath(children)}</td>,
-                img: ({ src, alt, width, height }) => {
-                  if (!src || typeof src !== "string") return null;
-                  return <button type="button" className="paper-image-button" aria-label="放大查看图片" onClick={() => setImagePreview({ src, alt: alt || "论文图表" })}><img src={src} alt={alt || "论文图表"} width={width} height={height} style={{ width: width || undefined, height: height || undefined }} loading="lazy" /></button>;
-                },
-              }}
-            >{bodyMarkdown(markdown)}</ReactMarkdown>
-          </div>
+           {translationMeta?.engine === "pdf2zh-next" ? <section className="min-w-0"><div className="mb-4 flex flex-wrap items-center gap-2"><span className="text-sm font-medium text-gray-700">PDF 阅读</span>{translationMeta.pdfMonoUrl && <button type="button" onClick={() => setPdfMode("mono")} className={`rounded-md px-3 py-1.5 text-xs font-medium ${pdfMode === "mono" ? "bg-indigo-600 text-white" : "border border-gray-300 text-gray-700"}`}>单语版</button>}{translationMeta.pdfDualUrl && <button type="button" onClick={() => setPdfMode("dual")} className={`rounded-md px-3 py-1.5 text-xs font-medium ${pdfMode === "dual" ? "bg-indigo-600 text-white" : "border border-gray-300 text-gray-700"}`}>双语版</button>}</div>{selectedPdfUrl ? <iframe title={pdfMode === "dual" ? "论文双语 PDF" : "论文中文 PDF"} src={selectedPdfUrl} className="h-[78vh] min-h-[600px] w-full rounded-lg border border-gray-300 bg-white" /> : <p className="text-sm text-gray-500">翻译 PDF 暂不可用。</p>}</section> : <div className="translation-prose min-w-0">
+             <ReactMarkdown
+               remarkPlugins={[remarkGfm, remarkMath]}
+               rehypePlugins={[rehypeRaw, [rehypeSanitize, translationSanitizeSchema], rehypeKatex]}
+               components={{
+                 p: ({ children }) => {
+                   const text = plainText(children).trim();
+                   const caption = /^\*\*(?:图|表)\s*\d+\s*[.:：]\*\*/i.test(text) || /^(?:Figure|Fig\.?|Table|图|表)\s*\d+(?:\s*[.:：-]|\s|$)/i.test(text);
+                   return <p className={caption ? "paper-caption" : undefined}>{children}</p>;
+                 },
+                 table: ({ children }) => <div className="paper-table-wrap"><table>{children}</table></div>,
+                 th: ({ children, ...props }) => <th {...props}>{renderTableCellMath(children)}</th>,
+                 td: ({ children, ...props }) => <td {...props}>{renderTableCellMath(children)}</td>,
+                 img: ({ src, alt, width, height }) => {
+                   if (!src || typeof src !== "string") return null;
+                   return <button type="button" className="paper-image-button" aria-label="放大查看图片" onClick={() => setImagePreview({ src, alt: alt || "论文图表" })}><img src={src} alt={alt || "论文图表"} width={width} height={height} style={{ width: width || undefined, height: height || undefined }} loading="lazy" /></button>;
+                 },
+               }}
+             >{bodyMarkdown(markdown)}</ReactMarkdown>
+           </div>}
         </div>
       </article>
       {imagePreview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 p-6" role="dialog" aria-modal="true" aria-label="放大查看论文图表" onClick={() => setImagePreview(null)}><button type="button" className="absolute right-5 top-4 rounded-full bg-white/90 px-3 py-1 text-2xl leading-none text-gray-800" aria-label="关闭图片预览" onClick={() => setImagePreview(null)}>×</button><img src={imagePreview.src} alt={imagePreview.alt} className="max-h-[92vh] max-w-[94vw] object-contain" onClick={(event) => event.stopPropagation()} /></div>}

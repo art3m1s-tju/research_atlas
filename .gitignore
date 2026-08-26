@@ -6,6 +6,7 @@ node_modules/
 out/
 .cache/
 .venv-atlas-parser*/
+.venv-pdf2zh*/
 
 # database
 data/*.db

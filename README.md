@@ -163,6 +163,22 @@ npm run summarize:papers
 
 在 `.env.local` 中配置 `TRANSLATION_CLOUD_ONLY=1`、`TRANSLATION_PARSER=paddleocr-only` 和 `PADDLEOCR_ACCESS_TOKEN`，即可强制所有论文解析走云端。该模式不调用本地 Docling、pdftotext、pdfimages 或 pdftoppm；如果云端结果无法确认矢量图或复杂关系，会进入 `needs_review`，而不是使用本地截图猜测。所有网络调用（PDF 下载、OCR 提交/轮询、DeepSeek、Qwen、embedding）统一只对瞬时错误重试，指数退避并遵守 `Retry-After`，400/401 等永久错误不会浪费请求。图表语义审校优先使用 Qwen3-VL-Flash：配置 `QWEN_VL_API_KEY`（或 `DASHSCOPE_API_KEY`）、`QWEN_VL_API_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1` 和 `QWEN_VL_MODEL=qwen3-vl-flash` 后，Qwen 只接收 PaddleOCR 导出的裁剪图，DeepSeek 仍负责标题、正文和题注翻译。
 
+#### pdf2zh-next 排版译文实验
+
+当前默认翻译引擎仍是 Atlas Markdown 链路。需要试用 PDFMathTranslate/BabelDOC 的排版版 PDF 时，先安装隔离环境：
+
+```bash
+npm run setup:pdf2zh
+```
+
+然后在 `.env.local` 中设置 `TRANSLATION_ENGINE=pdf2zh-next`，点击论文详情页的“翻译全文”，或运行：
+
+```bash
+TRANSLATION_ENGINE=pdf2zh-next npm run translate:paper -- --paper-id <id>
+```
+
+该模式生成 `translation_mono.pdf` 和 `translation_dual.pdf`，网页预览也会切换为 PDF 阅读器。默认复用 `DEEPSEEK_API_KEY`、模型和接口地址，也可以单独配置 `PDF2ZH_API_KEY` 与 `PDF2ZH_API_BASE_URL`。它不会生成 `translation_zh.md`；若要恢复原来的 Markdown 阅读，改回 `TRANSLATION_ENGINE=atlas` 并重新翻译。`pdf2zh-next` 和 BabelDOC 使用 AGPL-3.0，公开部署前请完成许可证评估。
+
 网页中的“同步最新论文”按钮和每日任务也调用同一个多源同步器：
 
 ```bash

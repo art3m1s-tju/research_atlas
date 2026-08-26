@@ -1,0 +1,2 @@
+# Isolated PDF translation/rendering backend for the Atlas experiment.
+pdf2zh-next==2.8.2

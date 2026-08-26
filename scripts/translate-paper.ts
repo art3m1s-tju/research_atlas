@@ -1,12 +1,12 @@
 import Database from "better-sqlite3";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ensureResearchFeatureSchema } from "../src/lib/research-features";
-import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, isLikelyChartTable, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, numberReferenceSection, pdfBboxCropArgs, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, resolveInstitutionNames, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationPrompt, translationRunDirectory, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown, type DocumentLayoutInput } from "../src/lib/paper-translation";
+import { annotateStructuredBindings, applySemanticBindingDecisions, assessTextExtractionCompleteness, buildDocumentIR, buildStructuredBindingManifest, compareAuthorSources, extractPaperAffiliations, extractPaperAuthorAffiliations, findUnknownProtectedTokens, inspectSourceQuality, isLikelyChartTable, normalizeBoundCaptionPlacement, normalizeExtraNumberedHeadings, normalizeTranslatedMarkdown, normalizeTranslatedStructureLabels, normalizeTranslationEngine, numberReferenceSection, pdfBboxCropArgs, pdfLinksFromLandingHtml, prepareTranslationSource, protectStructuredMarkdown, repairSourceQuality, resolveInstitutionNames, restoreBindingOrder, restoreHeadingLayout, restoreStructuredMarkdown, splitTranslationChunks, stripStructuredBindingMarkers, translationDirectory, translationEngineFingerprint, translationPrompt, translationRunDirectory, translationSourceHash, translationUrlCandidates, unwrapReferenceMathBlocks, validateTranslatedFragment, validateTranslatedMarkdown, type DocumentLayoutInput, type TranslationEngine } from "../src/lib/paper-translation";
 import { fetchWithRetry } from "../src/lib/resilient-fetch";
 import { assertTranslationOwnership, claimTranslationJob, failTranslationJob, finishTranslationJob, refreshTranslationLease, startTranslationJob, updateTranslationJobMetadata, updateTranslationProgress } from "../src/lib/translation-job";
 
@@ -17,6 +17,7 @@ let dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atla
 let model = process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
 let apiBaseUrl = process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com";
 let concurrency = Math.max(1, Math.min(4, Number(process.env.TRANSLATION_CONCURRENCY || 2)));
+let translationEngine: TranslationEngine = "atlas";
 let activeJobToken = "";
 
 function loadLocalEnv() {
@@ -704,7 +705,7 @@ async function tryReuseParsedSource(pdfPath: string, outputDirectory: string, so
   }
 }
 
-async function extractPdf(urls: string[], outputDirectory: string, onProgress: ParserProgress) {
+async function downloadPdf(urls: string[], outputDirectory: string, onProgress: ParserProgress) {
   let lastError = "没有找到可解析的 PDF";
   const cachedPdfPath = path.join(outputDirectory, "source.pdf");
   let cachedBytes: Buffer | null = null;
@@ -716,10 +717,7 @@ async function extractPdf(urls: string[], outputDirectory: string, onProgress: P
   if (cachedBytes && cachedBytes.subarray(0, 4).toString() === "%PDF" && process.env.TRANSLATION_FORCE !== "1") {
     const sourceUrl = urls[0] || "本地已校验 PDF 缓存";
     onProgress("downloading", "正在复用已校验的 PDF 缓存");
-    const reused = await tryReuseParsedSource(cachedPdfPath, outputDirectory, sourceUrl, onProgress);
-    if (reused) return reused;
-    const structured = await parseAndValidateSource(cachedPdfPath, sourceUrl, outputDirectory, onProgress);
-    return { text: structured.markdown, url: sourceUrl, pdfPath: cachedPdfPath, parser: structured.parser, manifest: structured.manifest };
+    return { url: sourceUrl, pdfPath: cachedPdfPath };
   }
   const candidates = [...new Set(urls.filter(Boolean))];
   for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
@@ -758,15 +756,271 @@ async function extractPdf(urls: string[], outputDirectory: string, onProgress: P
     }
     const pdfPath = path.join(outputDirectory, "source.pdf");
     await fs.writeFile(pdfPath, bytes);
-    const reused = await tryReuseParsedSource(pdfPath, outputDirectory, url, onProgress);
-    if (reused) return reused;
-    onProgress("parsing", "正在解析版面、公式、图片和表格；长论文可能需要几分钟");
-    // Parse errors intentionally propagate with their real phase/error message;
-    // they must not be rewritten as a "PDF 获取失败" download error.
-    const structured = await parseAndValidateSource(pdfPath, url, outputDirectory, onProgress);
-    return { text: structured.markdown, url, pdfPath, parser: structured.parser, manifest: structured.manifest };
+    return { url, pdfPath };
   }
   throw new Error(`PDF 获取失败：已对 ${candidates.length} 个来源自动重试仍无法下载（${lastError}）`);
+}
+
+async function extractPdf(urls: string[], outputDirectory: string, onProgress: ParserProgress) {
+  const downloaded = await downloadPdf(urls, outputDirectory, onProgress);
+  const reused = await tryReuseParsedSource(downloaded.pdfPath, outputDirectory, downloaded.url, onProgress);
+  if (reused) return reused;
+  onProgress("parsing", "正在解析版面、公式、图片和表格；长论文可能需要几分钟");
+  // Parse errors intentionally propagate with their real phase/error message;
+  // they must not be rewritten as a "PDF 获取失败" download error.
+  const structured = await parseAndValidateSource(downloaded.pdfPath, downloaded.url, outputDirectory, onProgress);
+  return { text: structured.markdown, url: downloaded.url, pdfPath: downloaded.pdfPath, parser: structured.parser, manifest: structured.manifest };
+}
+
+const PDF2ZH_EVENT_PREFIX = "ATLAS_PDF2ZH_EVENT\t";
+
+type Pdf2zhPdfStats = { pages?: number; text_chars?: number; cjk_chars?: number; pages_with_cjk?: number; pages_with_high_source_overlap?: number };
+type Pdf2zhRunnerResult = {
+  original_pdf_path?: string;
+  mono_pdf_path?: string | null;
+  dual_pdf_path?: string | null;
+  no_watermark_mono_pdf_path?: string | null;
+  no_watermark_dual_pdf_path?: string | null;
+  auto_extracted_glossary_path?: string | null;
+  stats?: { source?: Pdf2zhPdfStats; mono?: Pdf2zhPdfStats; dual?: Pdf2zhPdfStats };
+  translation_summary?: { total_count?: number; successful_count?: number; fallback_count?: number };
+  [key: string]: unknown;
+};
+
+type Pdf2zhTranslationResult = {
+  monoPath: string;
+  dualPath: string | null;
+  result: Pdf2zhRunnerResult;
+  validationIssues: string[];
+  translatedChars: number;
+  sourcePages: number;
+};
+
+function csvField(value: string) {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function glossaryRows(glossary: string) {
+  return glossary.split(/\r?\n/).flatMap((line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("|") || /^\|\s*-+\s*\|/.test(trimmed)) return [];
+    const cells = trimmed.replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+    if (cells.length < 2 || cells[0].toLowerCase() === "english" || cells[1].toLowerCase() === "chinese") return [];
+    if (!cells[0] || !cells[1]) return [];
+    return [{ source: cells[0], target: cells[1] }];
+  });
+}
+
+async function writePdf2zhGlossary(glossary: string, outputDirectory: string) {
+  const rows = glossaryRows(glossary);
+  if (!rows.length) return null;
+  const targetLanguage = process.env.PDF2ZH_LANG_OUT || "zh-CN";
+  const csv = [
+    "source,target,tgt_lng",
+    ...rows.map((row) => [row.source, row.target, targetLanguage].map(csvField).join(",")),
+  ].join("\n") + "\n";
+  const glossaryPath = path.join(outputDirectory, "pdf2zh_glossary.csv");
+  await fs.writeFile(glossaryPath, csv, "utf8");
+  return glossaryPath;
+}
+
+function pdf2zhPythonBin() {
+  return process.env.PDF2ZH_PYTHON_BIN || path.join(process.cwd(), ".venv-pdf2zh", "bin", "python");
+}
+
+function pdf2zhProgress(event: Record<string, any>, onProgress: ParserProgress) {
+  const type = String(event.type || "");
+  if (type === "stage_summary") {
+    onProgress("parsing", "pdf2zh-next 已启动，正在准备版面解析");
+    return;
+  }
+  if (!["progress_start", "progress_update", "progress_end"].includes(type)) return;
+  const stage = String(event.stage || "翻译处理");
+  const lowerStage = stage.toLowerCase();
+  const phase = /parse|layout|detect|scann/.test(lowerStage)
+    ? "parsing"
+    : /save|render|font|pdf/.test(lowerStage)
+      ? "rendering"
+      : "translating";
+  const current = Number(event.stage_current || 0);
+  const total = Number(event.stage_total || 0);
+  const progress = Number(event.overall_progress);
+  const suffix = current > 0 && total > 0 ? `（${current}/${total}）` : Number.isFinite(progress) ? `（总进度 ${Math.round(progress)}%）` : "";
+  onProgress(phase, `pdf2zh-next：${stage}${suffix}`, current, total);
+}
+
+async function runPdf2zhProcess(
+  pdfPath: string,
+  outputDirectory: string,
+  glossaryPath: string | null,
+  onProgress: ParserProgress,
+  signal?: AbortSignal,
+) {
+  const pythonBin = pdf2zhPythonBin();
+  if (!existsSync(pythonBin)) throw new Error(`pdf2zh-next 解析器未安装（缺少 ${pythonBin}），请先运行 npm run setup:pdf2zh`);
+  const runnerPath = path.join(process.cwd(), "scripts", "pdf2zh-runner.py");
+  const args = [runnerPath, "--pdf", pdfPath, "--output", outputDirectory];
+  if (glossaryPath) args.push("--glossary", glossaryPath);
+  onProgress("parsing", "正在使用 pdf2zh-next 解析并翻译 PDF");
+
+  return new Promise<Pdf2zhRunnerResult>((resolve, reject) => {
+    const child = spawn(pythonBin, args, {
+      cwd: process.cwd(),
+      detached: process.platform !== "win32",
+      // BabelDOC derives its cache location from Path.home() at import time.
+      // Keep that cache inside the Atlas project instead of sharing a possibly
+      // locked global cache with another pdf2zh process or user installation.
+      env: {
+        ...process.env,
+        HOME: path.resolve(process.env.PDF2ZH_HOME || path.join(process.cwd(), ".cache", "pdf2zh")),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdoutBuffer = "";
+    let finishResult: Pdf2zhRunnerResult | null = null;
+    let runnerError: Error | null = null;
+    let abortError: Error | null = null;
+    let settled = false;
+
+    const terminate = () => {
+      if (process.platform !== "win32" && child.pid) {
+        try {
+          // pdf2zh-next creates a multiprocessing child; terminate the whole
+          // process group so a lost lease cannot leave an API-calling orphan.
+          process.kill(-child.pid, "SIGTERM");
+          return;
+        } catch {
+          // Fall through to the direct child kill when the group is gone.
+        }
+      }
+      child.kill("SIGTERM");
+    };
+
+    const cleanup = () => {
+      if (signal) signal.removeEventListener("abort", abortHandler);
+    };
+    const settle = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else if (runnerError) reject(runnerError);
+      else if (!finishResult) reject(new Error("pdf2zh-next 未返回完成结果"));
+      else resolve(finishResult);
+    };
+    const handleLine = (line: string) => {
+      if (!line.startsWith(PDF2ZH_EVENT_PREFIX)) return;
+      try {
+        const event = JSON.parse(line.slice(PDF2ZH_EVENT_PREFIX.length)) as Record<string, any>;
+        if (event.type === "error") {
+          runnerError = new Error(`pdf2zh-next 翻译失败：${String(event.error || "未知错误")}`);
+          return;
+        }
+        if (event.type === "finish") {
+          finishResult = (event.translate_result || {}) as Pdf2zhRunnerResult;
+          return;
+        }
+        pdf2zhProgress(event, onProgress);
+      } catch (error) {
+        runnerError = new Error(`pdf2zh-next 进度消息无法解析：${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    const abortHandler = () => {
+      abortError = signal?.reason instanceof Error ? signal.reason : new Error("pdf2zh-next 翻译已取消");
+      terminate();
+    };
+    child.stdout.on("data", (chunk: Buffer | string) => {
+      stdoutBuffer += chunk.toString();
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || "";
+      for (const line of lines) handleLine(line);
+    });
+    child.stderr.on("data", (chunk: Buffer | string) => {
+      const message = chunk.toString().trim();
+      if (message) console.warn(`  [pdf2zh-next] ${message}`);
+    });
+    child.on("error", (error) => settle(error));
+    child.on("close", (code, signalName) => {
+      if (stdoutBuffer) handleLine(stdoutBuffer);
+      if (abortError) settle(abortError);
+      else if (runnerError) settle();
+      else if (code !== 0) settle(new Error(`pdf2zh-next 进程异常退出（退出码 ${code ?? "unknown"}${signalName ? `，信号 ${signalName}` : ""}）`));
+      else settle();
+    });
+    if (signal?.aborted) abortHandler();
+    else signal?.addEventListener("abort", abortHandler, { once: true });
+  });
+}
+
+function resultPdfPath(value: unknown) {
+  return typeof value === "string" && value.trim() ? path.resolve(value) : null;
+}
+
+async function copyPdf2zhOutput(sourcePath: string | null, targetPath: string, label: string) {
+  if (!sourcePath || !existsSync(sourcePath)) throw new Error(`pdf2zh-next 没有生成${label}：${sourcePath || "路径为空"}`);
+  if (path.resolve(sourcePath) !== path.resolve(targetPath)) await fs.copyFile(sourcePath, targetPath);
+}
+
+async function translateWithPdf2zh(
+  pdfPath: string,
+  outputDirectory: string,
+  glossary: string,
+  onProgress: ParserProgress,
+  signal?: AbortSignal,
+): Promise<Pdf2zhTranslationResult> {
+  const glossaryPath = await writePdf2zhGlossary(glossary, outputDirectory);
+  const result = await runPdf2zhProcess(pdfPath, outputDirectory, glossaryPath, onProgress, signal);
+  const monoSource = resultPdfPath(result.no_watermark_mono_pdf_path || result.mono_pdf_path);
+  const dualSource = resultPdfPath(result.no_watermark_dual_pdf_path || result.dual_pdf_path);
+  const monoPath = path.join(outputDirectory, "translation_mono.pdf");
+  const dualPath = path.join(outputDirectory, "translation_dual.pdf");
+  await copyPdf2zhOutput(monoSource, monoPath, "单语 PDF");
+  if (dualSource) await copyPdf2zhOutput(dualSource, dualPath, "双语 PDF");
+
+  const sourceStats = result.stats?.source || {};
+  const monoStats = result.stats?.mono || {};
+  const dualStats = result.stats?.dual || {};
+  const sourcePages = Number(sourceStats.pages || 0);
+  const sourceTextChars = Number(sourceStats.text_chars || 0);
+  const monoTextChars = Number(monoStats.text_chars || 0);
+  const monoCjkChars = Number(monoStats.cjk_chars || 0);
+  const monoPagesWithCjk = Number(monoStats.pages_with_cjk || 0);
+  const translationSummary = result.translation_summary;
+  const validationIssues: string[] = [];
+  if (!dualSource) validationIssues.push("pdf2zh-next 未生成双语 PDF");
+  if (!Number(monoStats.pages)) validationIssues.push("pdf2zh-next 未返回单语 PDF 页数统计");
+  if (sourcePages > 0 && Number(monoStats.pages) > 0 && sourcePages !== Number(monoStats.pages)) {
+    validationIssues.push(`单语 PDF 页数不一致：原文 ${sourcePages} 页，译文 ${monoStats.pages} 页`);
+  }
+  if (monoCjkChars === 0) validationIssues.push("单语 PDF 没有检测到中文文本，可能发生整页漏译或渲染失败");
+  if (sourceTextChars >= 1000 && monoCjkChars < Math.max(120, Math.floor(sourceTextChars * 0.05))) {
+    validationIssues.push(`单语 PDF 中文覆盖率过低：${monoCjkChars}/${sourceTextChars} 字符，可能存在大面积漏译`);
+  }
+  if (sourceTextChars >= 1000 && monoTextChars < Math.floor(sourceTextChars * 0.25)) {
+    validationIssues.push(`单语 PDF 文本量异常减少：原文 ${sourceTextChars}，译文 ${monoTextChars} 字符`);
+  }
+  if (Number(monoStats.pages) >= 4 && monoPagesWithCjk < Math.max(1, Math.ceil(Number(monoStats.pages) * 0.25))) {
+    validationIssues.push(`单语 PDF 中文页覆盖率过低：${monoPagesWithCjk}/${monoStats.pages} 页`);
+  }
+  if (sourceTextChars >= 1000 && Number(monoStats.pages_with_high_source_overlap || 0) > 0) {
+    validationIssues.push(`单语 PDF 有 ${monoStats.pages_with_high_source_overlap} 页与英文原文高度重合，可能存在整页漏译`);
+  }
+  if (!translationSummary || !Number(translationSummary.total_count || 0)) {
+    validationIssues.push("pdf2zh-next 未返回有效的段落翻译统计，无法确认是否存在回退段落");
+  } else if (Number(translationSummary.successful_count || 0) + Number(translationSummary.fallback_count || 0) !== Number(translationSummary.total_count || 0)) {
+    validationIssues.push(`pdf2zh-next 段落翻译统计不一致：总数 ${translationSummary.total_count}，成功 ${translationSummary.successful_count || 0}，回退 ${translationSummary.fallback_count || 0}`);
+  } else if (Number(translationSummary.fallback_count || 0) > 0) {
+    validationIssues.push(`pdf2zh-next 有 ${translationSummary.fallback_count} 个段落回退到简单翻译，需人工抽查`);
+  }
+  if (dualSource && !Number(dualStats.pages)) validationIssues.push("pdf2zh-next 未返回双语 PDF 页数统计");
+  return {
+    monoPath,
+    dualPath: dualSource ? dualPath : null,
+    result,
+    validationIssues,
+    translatedChars: Number(monoStats.text_chars || 0),
+    sourcePages,
+  };
 }
 
 function tokenOccurrenceCount(content: string, token: string) {
@@ -811,9 +1065,12 @@ async function translateChunk(chunk: string, index: number | string, total: numb
 }
 
 async function translatePaperTitle(title: string) {
+  const translationApiKey = translationEngine === "pdf2zh-next"
+    ? process.env.PDF2ZH_API_KEY || process.env.DEEPSEEK_API_KEY
+    : process.env.DEEPSEEK_API_KEY;
   const response = await fetchWithRetry(`${apiBaseUrl}/chat/completions`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${translationApiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model, thinking: { type: "disabled" }, temperature: 0.1, max_tokens: 160, stream: false, messages: [
       { role: "system", content: "你是中文科研论文标题翻译助手。只输出一个准确、简洁的中文标题，不要输出原文、引号、解释、作者或链接。模型名、数据集名和缩写保留。" },
       { role: "user", content: `请将下面的英文论文标题翻译成简体中文：\n${title}` },
@@ -963,8 +1220,13 @@ async function reviewStructuredBindings(manifest: ReturnType<typeof buildStructu
 async function main() {
   loadLocalEnv();
   dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "atlas.db");
-  model = process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
-  apiBaseUrl = process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com";
+  translationEngine = normalizeTranslationEngine(process.env.TRANSLATION_ENGINE);
+  model = translationEngine === "pdf2zh-next"
+    ? process.env.PDF2ZH_MODEL || process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash"
+    : process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash";
+  apiBaseUrl = translationEngine === "pdf2zh-next"
+    ? process.env.PDF2ZH_API_BASE_URL || process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com"
+    : process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com";
   concurrency = Math.max(1, Math.min(4, Number(process.env.TRANSLATION_CONCURRENCY || 2)));
   const leaseMinutes = Math.max(10, Number(process.env.TRANSLATION_LEASE_MINUTES || 15));
   const paperId = Number(process.argv[process.argv.indexOf("--paper-id") + 1]);
@@ -973,13 +1235,17 @@ async function main() {
   ensureResearchFeatureSchema(db);
   const paper = db.prepare("SELECT id, title, abstract, authors, pdf_url, doi, arxiv_id, normalized_title FROM papers WHERE id = ?").get(paperId) as any;
   if (!paper) throw new Error("论文不存在");
-  if (!process.env.DEEPSEEK_API_KEY) throw new Error("DEEPSEEK_API_KEY 未配置");
+  if (!process.env.DEEPSEEK_API_KEY && !(translationEngine === "pdf2zh-next" && process.env.PDF2ZH_API_KEY)) {
+    throw new Error(translationEngine === "pdf2zh-next" ? "PDF2ZH_API_KEY 或 DEEPSEEK_API_KEY 未配置" : "DEEPSEEK_API_KEY 未配置");
+  }
   const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
   const glossary = existsSync(terminologyPath) ? await fs.readFile(terminologyPath, "utf8") : "# 术语表\n\n以论文原文为准。\n";
   const sourceHash = translationSourceHash(paper, {
+    engine: translationEngine,
+    engineConfig: translationEngineFingerprint(translationEngine),
     model,
-    parser: process.env.TRANSLATION_CLOUD_ONLY !== "0" ? "paddleocr-only" : process.env.TRANSLATION_PARSER || "paddleocr-only",
-    parserVersion: process.env.TRANSLATION_PARSER_VERSION || "",
+    parser: translationEngine === "pdf2zh-next" ? "pdf2zh-next" : process.env.TRANSLATION_CLOUD_ONLY !== "0" ? "paddleocr-only" : process.env.TRANSLATION_PARSER || "paddleocr-only",
+    parserVersion: translationEngine === "pdf2zh-next" ? process.env.PDF2ZH_VERSION || "2.8.2" : process.env.TRANSLATION_PARSER_VERSION || "",
     formulaEnabled: process.env.TRANSLATION_ENABLE_FORMULA || "1",
     ocrEnabled: process.env.TRANSLATION_ENABLE_OCR || "0",
     imageScale: process.env.TRANSLATION_IMAGE_SCALE || "2",
@@ -1034,6 +1300,10 @@ async function main() {
       "structure_manifest.json",
       "translation_meta.json",
       "translation_report.md",
+      "translation_mono.pdf",
+      "translation_dual.pdf",
+      "pdf2zh_result.json",
+      "pdf2zh_glossary.csv",
     ].map((file) => fs.rm(path.join(outputDirectory, file), { force: true })));
     await fs.rm(path.join(outputDirectory, "chunks"), { recursive: true, force: true });
   }
@@ -1044,6 +1314,96 @@ async function main() {
     : [];
   const candidates = translationUrlCandidates(paper, alternatives);
   updateProgress("starting", "翻译进程已启动，正在准备论文源文件");
+
+  if (translationEngine === "pdf2zh-next") {
+    const downloaded = await downloadPdf(candidates, outputDirectory, (phase, message, current = 0, total = 0) => updateProgress(phase, message, current, total));
+    const pdfMetadataResult = updateTranslationJobMetadata(db, paperId, jobToken, leaseMinutes, {
+      sourceHash,
+      sourceUrl: downloaded.url,
+      outputDir: path.relative(process.cwd(), outputDirectory),
+      sourceChars: 0,
+      progressMessage: "pdf2zh-next 已下载 PDF，正在准备版面翻译",
+      progressTotal: 0,
+    });
+    if (pdfMetadataResult.changes !== 1) throw new Error("翻译任务所有权校验失败：无法写入 pdf2zh-next 源文件字段");
+    updateProgress("translating", "pdf2zh-next 已取得原始 PDF，正在生成排版译文");
+    const pdfTranslation = await translateWithPdf2zh(downloaded.pdfPath, outputDirectory, glossary, (phase, message, current = 0, total = 0) => updateProgress(phase, message, current, total), failureController.signal);
+    let translatedTitle = paper.title;
+    const validationIssues = [...pdfTranslation.validationIssues];
+    try {
+      translatedTitle = await translatePaperTitle(paper.title);
+    } catch (error) {
+      validationIssues.push(`中文标题翻译失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    updateProgress("validating", "pdf2zh-next 已生成译文，正在校验 PDF 页数和中文文本", pdfTranslation.sourcePages, pdfTranslation.sourcePages);
+    if (failureController.signal.aborted) throw failureController.signal.reason;
+    assertTranslationOwnership(db, paperId, jobToken, leaseMinutes);
+    const pdfSha256 = createHash("sha256").update(await fs.readFile(downloaded.pdfPath)).digest("hex");
+    const resultSummary = {
+      stats: pdfTranslation.result.stats || {},
+      translation_summary: pdfTranslation.result.translation_summary || null,
+      total_seconds: pdfTranslation.result.total_seconds || null,
+      peak_memory_usage: pdfTranslation.result.peak_memory_usage || null,
+    };
+    const parserManifest = {
+      parser: "pdf2zh-next",
+      parser_version: process.env.PDF2ZH_VERSION || "2.8.2",
+      source_pdf: downloaded.url,
+      pdf_sha256: pdfSha256,
+      source_path: "source.pdf",
+      outputs: {
+        mono: "translation_mono.pdf",
+        dual: pdfTranslation.dualPath ? "translation_dual.pdf" : null,
+      },
+      result: resultSummary,
+    };
+    await fs.writeFile(path.join(outputDirectory, "pdf2zh_result.json"), JSON.stringify(pdfTranslation.result, null, 2), "utf8");
+    await fs.writeFile(path.join(outputDirectory, "glossary.md"), glossary, "utf8");
+    await fs.writeFile(path.join(outputDirectory, "source.md"), `# ${paper.title}\n\n来源：${downloaded.url}\n\n解析与排版引擎：pdf2zh-next\n\n---\n\n本模式以排版 PDF 为主要译文产物；正文结构由 pdf2zh-next 保留在 PDF 内。\n`, "utf8");
+    await fs.writeFile(path.join(outputDirectory, "document.json"), JSON.stringify({
+      engine: "pdf2zh-next",
+      source_pdf: downloaded.url,
+      pdf_sha256: pdfSha256,
+      page_count: pdfTranslation.sourcePages,
+      outputs: parserManifest.outputs,
+      parser_manifest: parserManifest,
+    }, null, 2), "utf8");
+    await fs.writeFile(path.join(outputDirectory, "structure_manifest.json"), JSON.stringify({
+      engine: "pdf2zh-next",
+      objects: [],
+      captions: [],
+      ambiguous: [],
+      review_required: validationIssues.length > 0,
+      review_issues: validationIssues,
+      parser_manifest: parserManifest,
+    }, null, 2), "utf8");
+    await fs.writeFile(path.join(outputDirectory, "translation_meta.json"), JSON.stringify({
+      engine: "pdf2zh-next",
+      title_original: paper.title,
+      title_zh: translatedTitle,
+      authors: paper.authors || "",
+      author_affiliations: [],
+      affiliations: [],
+      source_url: downloaded.url,
+      pdf_outputs: parserManifest.outputs,
+    }, null, 2), "utf8");
+    await fs.writeFile(path.join(outputDirectory, "translation_report.md"), `# 翻译报告\n\n- 中文标题：${translatedTitle}\n- 引擎：pdf2zh-next\n- 模型：${process.env.PDF2ZH_MODEL || model}\n- 原文页数：${pdfTranslation.sourcePages || "未知"}\n- 单语 PDF：translation_mono.pdf\n- 双语 PDF：${pdfTranslation.dualPath ? "translation_dual.pdf" : "未生成"}\n- 结构校验：${validationIssues.length ? validationIssues.join("；") : "通过"}\n- 说明：本实验以 PDF 版面保留为目标；网页正文不再生成 Markdown，正式使用前应人工抽查公式、表格、图表和漏译情况。\n`, "utf8");
+    const status = validationIssues.length ? "needs_review" : "completed";
+    const finished = finishTranslationJob(db, paperId, jobToken, {
+      status,
+      error: validationIssues.length ? validationIssues.join("；") : null,
+      progressPhase: status,
+      progressMessage: status === "completed" ? "pdf2zh-next 翻译和 PDF 校验已完成" : "pdf2zh-next 已生成 PDF，但质量校验需要人工复核",
+      translatedChars: pdfTranslation.translatedChars,
+      progressCurrent: pdfTranslation.sourcePages,
+      progressTotal: pdfTranslation.sourcePages,
+    });
+    if (finished.changes !== 1) throw new Error("翻译任务所有权校验失败：无法提交 pdf2zh-next 最终状态");
+    clearInterval(heartbeat);
+    db.close();
+    return;
+  }
+
   const extracted = await extractPdf(candidates, outputDirectory, (phase, message, current = 0, total = 0) => updateProgress(phase, message, current, total));
   updateProgress("translating", "正在准备结构绑定和中文标题");
   const recoveredSource = await recoverFigureTablesFromPdf(extracted.text, extracted.pdfPath, outputDirectory);

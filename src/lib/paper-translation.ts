@@ -3,6 +3,40 @@ import { createHash } from "node:crypto";
 export const TRANSLATION_FORMAT_VERSION = "structured-pdf-v18-identity-gates";
 export const TRANSLATION_PROMPT_VERSION = "academic-markdown-v10-source-ir";
 
+export type TranslationEngine = "atlas" | "pdf2zh-next";
+
+/** Normalize the selectable translation backend while keeping the old default. */
+export function normalizeTranslationEngine(value?: string | null): TranslationEngine {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "pdf2zh" || normalized === "pdf2zh-next" || normalized === "babeldoc") return "pdf2zh-next";
+  return "atlas";
+}
+
+/** Include non-secret PDFMathTranslate settings in the translation cache key. */
+export function translationEngineFingerprint(engine: TranslationEngine) {
+  if (engine !== "pdf2zh-next") return "";
+  return JSON.stringify({
+    version: process.env.PDF2ZH_VERSION || "2.8.2",
+    baseUrl: process.env.PDF2ZH_API_BASE_URL || process.env.DEEPSEEK_API_BASE_URL || "https://api.deepseek.com",
+    langIn: process.env.PDF2ZH_LANG_IN || "en",
+    langOut: process.env.PDF2ZH_LANG_OUT || "zh-CN",
+    qps: process.env.PDF2ZH_QPS || process.env.TRANSLATION_CONCURRENCY || "2",
+    poolMaxWorkers: process.env.PDF2ZH_POOL_MAX_WORKERS || "",
+    jsonMode: process.env.PDF2ZH_ENABLE_JSON_MODE || "1",
+    noAutoExtractGlossary: process.env.PDF2ZH_NO_AUTO_EXTRACT_GLOSSARY || "1",
+    ignoreCache: process.env.PDF2ZH_IGNORE_CACHE || "0",
+    noDual: process.env.PDF2ZH_NO_DUAL || "0",
+    noMono: process.env.PDF2ZH_NO_MONO || "0",
+    watermarkOutputMode: process.env.PDF2ZH_WATERMARK_OUTPUT_MODE || "no_watermark",
+    translateTableText: process.env.PDF2ZH_TRANSLATE_TABLE_TEXT || "1",
+    autoOcrWorkaround: process.env.PDF2ZH_AUTO_ENABLE_OCR_WORKAROUND || "1",
+    enhanceCompatibility: process.env.PDF2ZH_ENHANCE_COMPATIBILITY || "0",
+    maxPagesPerPart: process.env.PDF2ZH_MAX_PAGES_PER_PART || "",
+    primaryFontFamily: process.env.PDF2ZH_PRIMARY_FONT_FAMILY || "",
+    customSystemPrompt: process.env.PDF2ZH_CUSTOM_SYSTEM_PROMPT || "",
+  });
+}
+
 export type SourceQualityIssue = {
   code: "repeated_text" | "unbalanced_html" | "unbalanced_math" | "orphan_fragment" | "oversized_line";
   message: string;
@@ -254,6 +288,8 @@ export function assessTextExtractionCompleteness(
 }
 
 type TranslationRuntime = {
+  engine?: TranslationEngine | string;
+  engineConfig?: string;
   model?: string;
   parser?: string;
   parserVersion?: string;
@@ -270,7 +306,7 @@ export function translationSourceHash(
   paper: { title: string; abstract?: string | null; pdf_url?: string | null; doi?: string | null; arxiv_id?: string | null },
   runtime: TranslationRuntime = {},
 ) {
-  return createHash("sha256").update(JSON.stringify({
+  const payload: Record<string, unknown> = {
     format: runtime.formatVersion || TRANSLATION_FORMAT_VERSION,
     prompt: runtime.promptVersion || TRANSLATION_PROMPT_VERSION,
     title: paper.title,
@@ -286,7 +322,14 @@ export function translationSourceHash(
     imageScale: runtime.imageScale || "2",
     semanticModel: runtime.semanticModel || "",
     glossary: runtime.glossary || "",
-  })).digest("hex");
+  };
+  // Keep existing Atlas cache keys stable; the alternate backend gets its own
+  // namespace and configuration fingerprint.
+  if (runtime.engine === "pdf2zh-next") {
+    payload.engine = "pdf2zh-next";
+    payload.engineConfig = runtime.engineConfig || "";
+  }
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
 }
 
 export function translationDirectory(paperId: number) {

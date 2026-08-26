@@ -20,6 +20,7 @@
     "translate:paper": "tsx scripts/translate-paper.ts",
     "translations:invalidate": "tsx scripts/invalidate-translation-cache.ts",
     "setup:translation-parser": "bash scripts/setup-translation-parser.sh",
+    "setup:pdf2zh": "bash scripts/setup-pdf2zh.sh",
     "clean:relevance": "tsx scripts/clean-relevance.ts",
     "test:relevance": "tsx scripts/check-relevance.ts",
     "test:translation": "node --import tsx --test tests/paper-translation.test.ts tests/resilient-fetch.test.ts tests/translation-job.test.ts tests/semantic-search.test.ts",

@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { ensureResearchFeatureSchema } from "@/lib/research-features";
-import { extractPaperAffiliations, extractPaperAuthorAffiliations, isLikelyChartTable, translationDirectory, translationSourceHash, translationUrlCandidates } from "@/lib/paper-translation";
+import { extractPaperAffiliations, extractPaperAuthorAffiliations, isLikelyChartTable, normalizeTranslationEngine, translationDirectory, translationEngineFingerprint, translationSourceHash, translationUrlCandidates } from "@/lib/paper-translation";
 import { claimTranslationJob, expireStaleTranslationJob, failTranslationJob } from "@/lib/translation-job";
 import { decodePaperId } from "@/lib/paper-id";
 
@@ -13,10 +13,13 @@ const DB_PATH = process.env.DATABASE_PATH || path.join(process.cwd(), "data", "a
 
 function translationRuntime() {
   const terminologyPath = path.join(process.cwd(), ".codex", "skills", "atlas-paper-translate", "references", "terminology.md");
+  const engine = normalizeTranslationEngine(process.env.TRANSLATION_ENGINE);
   return {
-    model: process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
-    parser: process.env.TRANSLATION_CLOUD_ONLY !== "0" ? "paddleocr-only" : process.env.TRANSLATION_PARSER || "paddleocr-only",
-    parserVersion: process.env.TRANSLATION_PARSER_VERSION || "",
+    engine,
+    engineConfig: translationEngineFingerprint(engine),
+    model: engine === "pdf2zh-next" ? process.env.PDF2ZH_MODEL || process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash" : process.env.DEEPSEEK_TRANSLATION_MODEL || process.env.DEEPSEEK_MODEL || "deepseek-v4-flash",
+    parser: engine === "pdf2zh-next" ? "pdf2zh-next" : process.env.TRANSLATION_CLOUD_ONLY !== "0" ? "paddleocr-only" : process.env.TRANSLATION_PARSER || "paddleocr-only",
+    parserVersion: engine === "pdf2zh-next" ? process.env.PDF2ZH_VERSION || "2.8.2" : process.env.TRANSLATION_PARSER_VERSION || "",
     formulaEnabled: process.env.TRANSLATION_ENABLE_FORMULA || "1",
     ocrEnabled: process.env.TRANSLATION_ENABLE_OCR || "0",
     imageScale: process.env.TRANSLATION_IMAGE_SCALE || "2",
@@ -38,13 +41,15 @@ function rewriteAssetReferences(markdown: string, id: string) {
 }
 
 function hasTranslationArtifacts(outputDir: string) {
-  return ["translation_zh.md", "translation_meta.json", "structure_manifest.json", "document.json"]
-    .every((file) => existsSync(path.join(process.cwd(), outputDir, file)));
+  const root = path.join(process.cwd(), outputDir);
+  const metadataExists = ["translation_meta.json", "structure_manifest.json", "document.json"]
+    .every((file) => existsSync(path.join(root, file)));
+  return metadataExists && (existsSync(path.join(root, "translation_zh.md")) || existsSync(path.join(root, "translation_mono.pdf")));
 }
 
 function contentType(filePath: string) {
   const extension = path.extname(filePath).toLowerCase();
-  return ({ ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".svg": "image/svg+xml" } as Record<string, string>)[extension] || "application/octet-stream";
+  return ({ ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".svg": "image/svg+xml" } as Record<string, string>)[extension] || "application/octet-stream";
 }
 
 export async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
@@ -73,12 +78,19 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     }
     const file = params.get("file");
     if (file) {
-      if (!row?.output_dir || !["source.md", "source_structured.md", "document.json", "translation_zh.md", "translation_candidate.md", "translation_meta.json", "glossary.md", "translation_report.md"].includes(file)) {
+      if (!row?.output_dir || !["source.md", "source_structured.md", "document.json", "translation_zh.md", "translation_candidate.md", "translation_mono.pdf", "translation_dual.pdf", "translation_meta.json", "glossary.md", "translation_report.md"].includes(file)) {
         return NextResponse.json({ error: "翻译文件尚未生成" }, { status: 404 });
       }
       if (file === "translation_zh.md" && row.status !== "completed") return NextResponse.json({ error: "正式译文尚未通过结构校验" }, { status: 404 });
       if (file === "translation_candidate.md" && row.status !== "needs_review") return NextResponse.json({ error: "待复核译文尚未生成" }, { status: 404 });
-      const content = await fs.readFile(path.join(process.cwd(), row.output_dir, file), "utf8").catch(() => null);
+      if (["translation_mono.pdf", "translation_dual.pdf"].includes(file) && !["completed", "needs_review"].includes(row.status)) return NextResponse.json({ error: "翻译 PDF 尚未通过任务校验" }, { status: 404 });
+      const filePath = path.join(process.cwd(), row.output_dir, file);
+      if (["translation_mono.pdf", "translation_dual.pdf"].includes(file)) {
+        const content = await fs.readFile(filePath).catch(() => null);
+        if (content === null) return NextResponse.json({ error: "翻译文件不存在" }, { status: 404 });
+        return new NextResponse(new Uint8Array(content), { headers: { "Content-Type": contentType(file), "Content-Disposition": `inline; filename="${file}"` } });
+      }
+      const content = await fs.readFile(filePath, "utf8").catch(() => null);
       if (content === null) return NextResponse.json({ error: "翻译文件不存在" }, { status: 404 });
       const renderedContent = ["translation_zh.md", "translation_candidate.md"].includes(file) ? rewriteAssetReferences(content, id) : content;
       return new NextResponse(renderedContent, { headers: { "Content-Type": "text/markdown; charset=utf-8", "Content-Disposition": `inline; filename="${file}"` } });
@@ -133,14 +145,22 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
     }
     const formalTranslationExists = Boolean(row?.output_dir && existsSync(path.join(process.cwd(), row.output_dir, "translation_zh.md")));
     const candidateTranslationExists = Boolean(row?.status === "needs_review" && row.output_dir && existsSync(path.join(process.cwd(), row.output_dir, "translation_candidate.md")));
+    const pdfMonoExists = Boolean(row?.output_dir && existsSync(path.join(process.cwd(), row.output_dir, "translation_mono.pdf")));
+    const pdfDualExists = Boolean(row?.output_dir && existsSync(path.join(process.cwd(), row.output_dir, "translation_dual.pdf")));
+    const pdfMonoUrl = pdfMonoExists ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_mono.pdf` : null;
+    const pdfDualUrl = pdfDualExists ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_dual.pdf` : null;
+    const pdfEngine = metadata?.engine === "pdf2zh-next";
+    const pdfArtifactsVisible = row && ["completed", "needs_review"].includes(row.status);
     return NextResponse.json({ translation: row ? {
       ...row,
       ...(metadata || {}),
-      previewUrl: ((row.status === "completed" && formalTranslationExists) || candidateTranslationExists) ? `/papers/${encodeURIComponent(decodePaperId(id))}/translation` : null,
+      previewUrl: ((row.status === "completed" && (formalTranslationExists || (pdfEngine && pdfMonoExists))) || candidateTranslationExists || (pdfEngine && row.status === "needs_review" && pdfMonoExists)) ? `/papers/${encodeURIComponent(decodePaperId(id))}/translation` : null,
       markdownUrl: row.status === "completed" && formalTranslationExists ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_zh.md` : null,
       candidateUrl: candidateTranslationExists
         ? `/api/papers/${encodeURIComponent(decodePaperId(id))}/translation?file=translation_candidate.md`
         : null,
+      pdfMonoUrl: pdfArtifactsVisible ? pdfMonoUrl : null,
+      pdfDualUrl: pdfArtifactsVisible ? pdfDualUrl : null,
     } : null });
   } finally { db.close(); }
 }
@@ -159,8 +179,9 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const candidates = translationUrlCandidates(paper, alternatives);
     if (!candidates.length) return NextResponse.json({ error: "这篇论文没有可访问的 PDF，暂时无法生成全文翻译。" }, { status: 400 });
     const sourceHash = translationSourceHash(paper, translationRuntime());
-    const existing = db.prepare("SELECT status, source_hash, error, progress_message, lease_expires_at, output_dir FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
-    if (existing?.status === "completed" && existing.source_hash === sourceHash && !payload.force && hasTranslationArtifacts(existing.output_dir || translationDirectory(paper.id))) {
+    const existing = db.prepare("SELECT status, source_hash, source_url, error, progress_message, lease_expires_at, output_dir FROM paper_translations WHERE paper_id = ?").get(paper.id) as any;
+    const sourceUrlMatches = !existing?.source_url || candidates.includes(existing.source_url);
+    if (existing?.status === "completed" && existing.source_hash === sourceHash && sourceUrlMatches && !payload.force && hasTranslationArtifacts(existing.output_dir || translationDirectory(paper.id))) {
       return NextResponse.json({ success: true, cached: true, status: existing.status, message: "已存在同版本中文翻译。" });
     }
     const cacheInvalidated = existing?.status === "pending" && String(existing?.progress_message || "").startsWith("旧缓存已失效");

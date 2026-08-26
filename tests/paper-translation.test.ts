@@ -17,6 +17,7 @@ import {
   resolveInstitutionNames,
   normalizeTranslatedMarkdown,
   normalizeExtraNumberedHeadings,
+  normalizeTranslationEngine,
   normalizeTranslatedStructureLabels,
   numberReferenceSection,
   pdfBboxCropArgs,
@@ -752,6 +753,14 @@ test("translation cache hash changes with model, parser settings, and glossary",
   assert.notEqual(baseline, translationSourceHash(paper, { model: "model-b", parser: "docling", formulaEnabled: "1", glossary: "A" }));
   assert.notEqual(baseline, translationSourceHash(paper, { model: "model-a", parser: "legacy", formulaEnabled: "1", glossary: "A" }));
   assert.notEqual(baseline, translationSourceHash(paper, { model: "model-a", parser: "docling", formulaEnabled: "1", glossary: "B" }));
+  assert.notEqual(baseline, translationSourceHash(paper, { model: "model-a", parser: "docling", formulaEnabled: "1", glossary: "A", engine: "pdf2zh-next" }));
+});
+
+test("translation engine aliases select the PDFMathTranslate backend", () => {
+  assert.equal(normalizeTranslationEngine(undefined), "atlas");
+  assert.equal(normalizeTranslationEngine("atlas"), "atlas");
+  assert.equal(normalizeTranslationEngine("pdf2zh"), "pdf2zh-next");
+  assert.equal(normalizeTranslationEngine("BabelDOC"), "pdf2zh-next");
 });
 
 test("translation cache hash invalidates the previous format and prompt versions", () => {
